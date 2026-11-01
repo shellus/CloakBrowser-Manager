@@ -97,6 +97,32 @@ def test_native_arguments_keep_seed_and_do_not_apply_manager_emulation():
     assert not any(arg.startswith(('--headless', '--fingerprint-gpu', '--window-size', '--restore-last-session', '--enable-automation')) for arg in args)
 
 
+@pytest.mark.skipif(import_bam.os.name != 'nt', reason='Windows-only import')
+@pytest.mark.parametrize('exit_type', ['SessionEnded', 'metadata-only', 'Crashed'])
+def test_import_handles_unstarted_and_session_ended_profiles_without_repair(tmp_db, bam_store, exit_type):
+    import shutil
+    root, source, metadata = bam_store
+    if exit_type == 'metadata-only':
+        shutil.rmtree(source)
+    else:
+        (source / 'Default' / 'Preferences').write_text(json.dumps({'profile': {'exit_type': exit_type}}))
+    before = import_bam.inventory(root)
+    if exit_type == 'Crashed':
+        with pytest.raises(ValueError, match='not exited normally'):
+            import_bam.import_profile(root, 7, tmp_db)
+        assert db.list_profiles() == []
+    else:
+        profile = import_bam.import_profile(root, 7, tmp_db)
+        marker = json.loads((Path(profile['user_data_dir']) / IMPORT_MANIFEST).read_text(encoding='utf8'))
+        assert marker['source_metadata_only'] == (exit_type == 'metadata-only')
+        if exit_type == 'SessionEnded':
+            assert (Path(profile['user_data_dir']) / 'Default' / 'Preferences').read_bytes() == (source / 'Default' / 'Preferences').read_bytes()
+        else:
+            assert not source.exists()
+        assert profile['name'] == metadata['name']
+    assert import_bam.inventory(root) == before
+
+
 @pytest.mark.asyncio
 async def test_close_attached_browser_uses_browser_close_and_waits_for_process():
     context, browser, playwright, process = MagicMock(), MagicMock(), MagicMock(), MagicMock()

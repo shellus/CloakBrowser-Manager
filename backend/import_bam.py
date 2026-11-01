@@ -53,11 +53,13 @@ def import_profile(runtime_root: Path, profile_id: int, data_dir: Path, proxy: s
     profile = next(p for p in document['profiles'] if p['id'] == profile_id)
     source = store / 'workers' / str(profile_id)
     assert_stopped(source)
-    if not (source / 'Default' / 'Preferences').is_file():
-        raise ValueError('Source is not an existing initialized profile')
-    preferences = json.loads((source / 'Default' / 'Preferences').read_text(encoding='utf-8'))
-    if preferences.get('profile', {}).get('exit_type') != 'Normal':
-        raise ValueError('Source has not exited normally; import will not repair source data')
+    metadata_only = not source.exists()
+    if not metadata_only:
+        if not (source / 'Default' / 'Preferences').is_file():
+            raise ValueError('Source is an incomplete initialized profile')
+        preferences = json.loads((source / 'Default' / 'Preferences').read_text(encoding='utf-8'))
+        if preferences.get('profile', {}).get('exit_type') not in ('Normal', 'SessionEnded'):
+            raise ValueError('Source has not exited normally; import will not repair source data')
 
     # Import database only after selecting its independent data directory.
     os.environ['CLOAKBROWSER_MANAGER_DATA_DIR'] = str(data_dir)
@@ -88,7 +90,11 @@ def import_profile(runtime_root: Path, profile_id: int, data_dir: Path, proxy: s
     staged.mkdir(parents=True)
     manager_profile = None
     try:
-        copied_hashes = copy_verified(source, staged / 'profile')
+        if metadata_only:
+            (staged / 'profile').mkdir()
+            copied_hashes = {}
+        else:
+            copied_hashes = copy_verified(source, staged / 'profile')
         extension_roots = []
         extensions = runtime_root / 'extensions'
         if extensions.exists():
@@ -113,6 +119,7 @@ def import_profile(runtime_root: Path, profile_id: int, data_dir: Path, proxy: s
             'runtime_version': runtime_manifest['runtimeVersion'], 'browser_sha256': digest(executable),
             'extension_directories': [str(target / 'bam-extensions' / name) for name in extension_roots],
             'source_sha256': copied_hashes,
+            'source_metadata_only': metadata_only,
         }
         (staged / 'profile' / IMPORT_MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
         target.parent.mkdir(parents=True, exist_ok=True)

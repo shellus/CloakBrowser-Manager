@@ -77,6 +77,11 @@ and stores the mapping in the copied profile's `bam-import.json`. The Manager UU
 does not replace that original fingerprint identity. Runtime packages are shared
 between imports of the same version; each import pins its own extension copy.
 
+Profiles that have never created a user-data directory import their metadata and
+initialize browser data on first launch. Existing data must have a normal exit
+(`Normal` or Windows `SessionEnded`); crash markers are rejected. Session exit
+markers are copied verbatim, without repairing or changing the source.
+
 Set `AUTH_TOKEN` in the ignored `.env`. The scheduled task runs at user logon with
 an interactive token, serves only loopback and restarts a failed Manager process.
 It does not run in Windows service session 0. A logged-in desktop is required.
