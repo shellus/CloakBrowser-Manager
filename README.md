@@ -53,6 +53,44 @@ cd CloakBrowser-Manager
 
 This path requires Python 3.10+ and Node 18+; the first run creates a local Python environment, installs dependencies, and builds the React UI before starting the Manager.
 
+### Import existing BAM Windows profiles
+
+The opt-in `bam-windows` launch mode preserves BAM's native Chromium arguments
+and uses a copied, pinned Runtime Store package. It skips the CloakBrowser Python
+launch wrapper, first-run bookmarks/search setup, viewport/GPU overrides and
+automatic engine updates. Standard Manager profiles keep their existing behavior.
+
+Run under the **same Windows user** that owns BAM's encrypted browser data. Stop
+the source profile first; the importer only copies and never repairs or modifies
+the source. Keep source and imported identities from running at the same time.
+
+```powershell
+.venv\Scripts\python -m backend.import_bam --runtime-root <bam-runtime-root> --profile-id <id> --data-dir <manager-data-dir> --proxy <account-loopback-proxy>
+.\scripts\windows-host.ps1 -Install -DataDirectory <manager-data-dir> -Port <manager-port>
+```
+
+The import copies complete user data (including Local State and encrypted
+cookies), the active browser package, unpacked extensions and original metadata
+(including latitude/longitude and environment locks). It derives the seed using
+BAM's original Profile ID, verifies file hashes, rejects running/duplicate imports
+and stores the mapping in the copied profile's `bam-import.json`. The Manager UUID
+does not replace that original fingerprint identity. Runtime packages are shared
+between imports of the same version; each import pins its own extension copy.
+
+Set `AUTH_TOKEN` in the ignored `.env`. The scheduled task runs at user logon with
+an interactive token, serves only loopback and restarts a failed Manager process.
+It does not run in Windows service session 0. A logged-in desktop is required.
+Reinstalling the task updates its data directory and port. Use
+`Get-ScheduledTask -TaskName CloakBrowser-Manager-Windows` to inspect it.
+
+Imported profiles honor seed, name, locale, timezone and proxy (including the
+shared `proxy_chain` implementation when enabled). Manager GPU/screen emulation,
+advanced launch arguments and extension overrides do not apply in this mode;
+the pinned BAM runtime and extension copies define those settings. Launch checks
+that the original profile is stopped and that the pinned executable is unchanged.
+Keep this mode on Windows with local storage. Moving it to another OS/user or
+using registry storage is outside the import contract.
+
 ### Linux server
 
 ```bash

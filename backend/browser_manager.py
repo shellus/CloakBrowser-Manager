@@ -370,6 +370,15 @@ class BrowserManager:
         Pro download stays out of the launch path and auto-launch's 60s timeout.
         Never raises: on any failure the keyless baked-in binary remains usable.
         """
+        from . import database as db
+        profiles = db.list_profiles()
+        if profiles and all(p.get("launch_mode") == "bam-windows" for p in profiles):
+            from .bam_windows import IMPORT_MANIFEST
+            manifest = json.loads((Path(profiles[0]["user_data_dir"]) / IMPORT_MANIFEST).read_text(encoding="utf-8"))
+            self.binary_version = manifest["runtime_version"]
+            self.license_tier = "keyless"
+            return
+
         from cloakbrowser.config import CHROMIUM_VERSION, get_chromium_version
         from cloakbrowser.download import ensure_binary
         from cloakbrowser.license import (
@@ -464,127 +473,132 @@ class BrowserManager:
                 for lock_file in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
                     (user_data_dir / lock_file).unlink(missing_ok=True)
 
-            _init_profile_defaults(user_data_dir)
-
-            # One-time per profile (opt-out via set_google_default): make Google
-            # the default search engine. Runs before the user-facing launch;
-            # reports "initializing" via get_status while it works (one short
-            # headless launch). Never fatal.
-            if profile.get("set_google_default", True):
-                await self._ensure_search_engine(profile_id, user_data_dir)
-
-            if display is not None and ws_port is not None:
-                await self.vnc.start_vnc(
-                    display,
-                    ws_port,
-                    width=profile.get("screen_width", 1920),
-                    height=profile.get("screen_height", 1080),
-                )
-
-            user_launch_args = profile.get("launch_args") or []
-            conflicting_debug_args = [
-                arg for arg in user_launch_args
-                if arg.startswith(("--remote-debugging-port", "--remote-debugging-address"))
-            ]
-            if conflicting_debug_args:
-                raise ValueError(
-                    "Manager owns remote debugging configuration; remove: "
-                    + ", ".join(conflicting_debug_args)
-                )
-
-            extra_args = self._build_fingerprint_args(profile)
-            extra_args += user_launch_args
-            extra_args.append("--remote-debugging-address=127.0.0.1")
-            # Reopen the tabs the user had open when the profile was last stopped.
-            # Chrome's persistent session is saved on disk but only restored when told to.
-            if profile.get("restore_session", True):
-                extra_args.append("--restore-last-session")
-
-            raw_proxy = profile.get("proxy") or None
-            proxy = _normalize_proxy(raw_proxy) if raw_proxy else None
-            if proxy:
-                _validate_proxy(proxy)
-
-            launch_options: dict[str, Any] = {
-                "user_data_dir": profile["user_data_dir"],
-                "headless": False,
-                "proxy": proxy,
-                "args": extra_args,
-                "timezone": profile.get("timezone") or None,
-                "locale": profile.get("locale") or None,
-                "humanize": bool(profile.get("humanize", False)),
-                "human_preset": profile.get("human_preset", "default"),
-                "geoip": bool(profile.get("geoip", False)),
-                "color_scheme": profile.get("color_scheme") or None,
-                "extension_paths": profile.get("extension_paths") or [],
-                "license_key": self.license_key,
-                "release_channel": self.release_channel,
-            }
-            if display is not None:
-                launch_options["viewport"] = {
-                    "width": profile.get("screen_width", 1920),
-                    "height": profile.get("screen_height", 1080) - 133,
-                }
-                launch_options["env"] = {**os.environ, "DISPLAY": f":{display}"}
-
-            last_cdp_error: Exception | None = None
-            for attempt in range(1, CDP_START_ATTEMPTS + 1):
+            if profile.get("launch_mode") == "bam-windows":
+                from .bam_windows import launch as launch_bam_windows
                 cdp_port = self._reserve_cdp_port()
-                launch_options["args"] = [
-                    *extra_args,
-                    f"--remote-debugging-port={cdp_port}",
-                ]
-                try:
-                    context = await launch_persistent_context_async(**launch_options)
-                    # An over-cap/denied seat leaves the browser booting but never
-                    # serving a usable CDP endpoint — so waiting on CDP would just
-                    # time out (or worse). The wrapper wrote the reason to a denial
-                    # file; check it immediately and each CDP poll so a denial bails
-                    # in ~1s instead of waiting out CDP that will never come.
-                    denial_path = getattr(context, "_cloak_denial_path", None)
-                    lic = self._denial_error(denial_path)
-                    if lic is not None:
-                        raise lic
-                    await self._wait_for_cdp(cdp_port, denial_path=denial_path)
-                    break
-                except asyncio.CancelledError:
-                    if context is not None:
-                        await self._close_context(context, profile_id)
-                    self._release_cdp_port(cdp_port)
-                    context = None
-                    cdp_port = None
-                    raise
-                except Exception as exc:
-                    last_cdp_error = exc
-                    # Grab the denial path before dropping the context: a denial
-                    # that lands during _wait_for_cdp surfaces as a TimeoutError,
-                    # not the license exception, so check the file explicitly.
-                    dp = getattr(context, "_cloak_denial_path", None) if context is not None else None
-                    if context is not None:
-                        await self._close_context(context, profile_id)
-                    self._release_cdp_port(cdp_port)
-                    context = None
-                    cdp_port = None
-                    # A license denial (out of seats, bad/expired key, server
-                    # unreachable, local config) is deterministic — retrying just
-                    # wastes ~10s and re-denies. Fail fast with the real reason,
-                    # whether it raised as the license exception or as a timeout.
-                    if isinstance(exc, CloakBrowserLicenseError):
-                        raise
-                    lic = self._denial_error(dp)
-                    if lic is not None:
-                        raise lic from exc
-                    logger.warning(
-                        "Browser/CDP startup attempt %d/%d failed for %s: %s",
-                        attempt,
-                        CDP_START_ATTEMPTS,
-                        profile_id,
-                        exc,
-                    )
+                context = await launch_bam_windows(profile, cdp_port)
             else:
-                raise RuntimeError(
-                    f"Unable to start verified CDP for profile {profile_id}"
-                ) from last_cdp_error
+                _init_profile_defaults(user_data_dir)
+
+                # One-time per profile (opt-out via set_google_default): make Google
+                # the default search engine. Runs before the user-facing launch;
+                # reports "initializing" via get_status while it works (one short
+                # headless launch). Never fatal.
+                if profile.get("set_google_default", True):
+                    await self._ensure_search_engine(profile_id, user_data_dir)
+
+                if display is not None and ws_port is not None:
+                    await self.vnc.start_vnc(
+                        display,
+                        ws_port,
+                        width=profile.get("screen_width", 1920),
+                        height=profile.get("screen_height", 1080),
+                    )
+
+                user_launch_args = profile.get("launch_args") or []
+                conflicting_debug_args = [
+                    arg for arg in user_launch_args
+                    if arg.startswith(("--remote-debugging-port", "--remote-debugging-address"))
+                ]
+                if conflicting_debug_args:
+                    raise ValueError(
+                        "Manager owns remote debugging configuration; remove: "
+                        + ", ".join(conflicting_debug_args)
+                    )
+
+                extra_args = self._build_fingerprint_args(profile)
+                extra_args += user_launch_args
+                extra_args.append("--remote-debugging-address=127.0.0.1")
+                # Reopen the tabs the user had open when the profile was last stopped.
+                # Chrome's persistent session is saved on disk but only restored when told to.
+                if profile.get("restore_session", True):
+                    extra_args.append("--restore-last-session")
+
+                raw_proxy = profile.get("proxy") or None
+                proxy = _normalize_proxy(raw_proxy) if raw_proxy else None
+                if proxy:
+                    _validate_proxy(proxy)
+
+                launch_options: dict[str, Any] = {
+                    "user_data_dir": profile["user_data_dir"],
+                    "headless": False,
+                    "proxy": proxy,
+                    "args": extra_args,
+                    "timezone": profile.get("timezone") or None,
+                    "locale": profile.get("locale") or None,
+                    "humanize": bool(profile.get("humanize", False)),
+                    "human_preset": profile.get("human_preset", "default"),
+                    "geoip": bool(profile.get("geoip", False)),
+                    "color_scheme": profile.get("color_scheme") or None,
+                    "extension_paths": profile.get("extension_paths") or [],
+                    "license_key": self.license_key,
+                    "release_channel": self.release_channel,
+                }
+                if display is not None:
+                    launch_options["viewport"] = {
+                        "width": profile.get("screen_width", 1920),
+                        "height": profile.get("screen_height", 1080) - 133,
+                    }
+                    launch_options["env"] = {**os.environ, "DISPLAY": f":{display}"}
+
+                last_cdp_error: Exception | None = None
+                for attempt in range(1, CDP_START_ATTEMPTS + 1):
+                    cdp_port = self._reserve_cdp_port()
+                    launch_options["args"] = [
+                        *extra_args,
+                        f"--remote-debugging-port={cdp_port}",
+                    ]
+                    try:
+                        context = await launch_persistent_context_async(**launch_options)
+                        # An over-cap/denied seat leaves the browser booting but never
+                        # serving a usable CDP endpoint — so waiting on CDP would just
+                        # time out (or worse). The wrapper wrote the reason to a denial
+                        # file; check it immediately and each CDP poll so a denial bails
+                        # in ~1s instead of waiting out CDP that will never come.
+                        denial_path = getattr(context, "_cloak_denial_path", None)
+                        lic = self._denial_error(denial_path)
+                        if lic is not None:
+                            raise lic
+                        await self._wait_for_cdp(cdp_port, denial_path=denial_path)
+                        break
+                    except asyncio.CancelledError:
+                        if context is not None:
+                            await self._close_context(context, profile_id)
+                        self._release_cdp_port(cdp_port)
+                        context = None
+                        cdp_port = None
+                        raise
+                    except Exception as exc:
+                        last_cdp_error = exc
+                        # Grab the denial path before dropping the context: a denial
+                        # that lands during _wait_for_cdp surfaces as a TimeoutError,
+                        # not the license exception, so check the file explicitly.
+                        dp = getattr(context, "_cloak_denial_path", None) if context is not None else None
+                        if context is not None:
+                            await self._close_context(context, profile_id)
+                        self._release_cdp_port(cdp_port)
+                        context = None
+                        cdp_port = None
+                        # A license denial (out of seats, bad/expired key, server
+                        # unreachable, local config) is deterministic — retrying just
+                        # wastes ~10s and re-denies. Fail fast with the real reason,
+                        # whether it raised as the license exception or as a timeout.
+                        if isinstance(exc, CloakBrowserLicenseError):
+                            raise
+                        lic = self._denial_error(dp)
+                        if lic is not None:
+                            raise lic from exc
+                        logger.warning(
+                            "Browser/CDP startup attempt %d/%d failed for %s: %s",
+                            attempt,
+                            CDP_START_ATTEMPTS,
+                            profile_id,
+                            exc,
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Unable to start verified CDP for profile {profile_id}"
+                    ) from last_cdp_error
 
             if context is None or cdp_port is None:
                 raise RuntimeError(f"Browser startup did not complete for profile {profile_id}")

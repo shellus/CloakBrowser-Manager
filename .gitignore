@@ -35,3 +35,6 @@ publish-docker.sh
 debug
 backend/version.txt
 .plans
+data/
+runtime/
+README.local.md

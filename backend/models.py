@@ -13,6 +13,7 @@ class ProfileCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    launch_mode: Literal["standard", "bam-windows"] = "standard"
     fingerprint_seed: int | None = None
     proxy: str | None = None
     proxy_chain: list[dict] | None = None
@@ -41,6 +42,7 @@ class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
+    launch_mode: Literal["standard", "bam-windows"] | None = None
     fingerprint_seed: int | None = None
     proxy: str | None = Field(default=None)
     proxy_chain: list[dict] | None = None
@@ -89,6 +91,7 @@ class ReorderRequest(BaseModel):
 class ProfileResponse(BaseModel):
     id: str
     name: str
+    launch_mode: Literal["standard", "bam-windows"] = "standard"
     fingerprint_seed: int
     proxy: str | None = None
     proxy_chain: list[dict] | None = None

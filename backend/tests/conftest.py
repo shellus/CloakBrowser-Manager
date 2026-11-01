@@ -4,10 +4,33 @@ from __future__ import annotations
 
 import sys
 import types
+import tempfile
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+# Collection imports main.py, which otherwise loads the real source .env and
+# native settings before tmp_db can run. Never read deployment configuration.
+from backend import env_file
+
+_test_data = tempfile.TemporaryDirectory(prefix="manager-tests-")
+_test_environment = pytest.MonkeyPatch()
+_test_environment.setattr(env_file, "load_env_file", lambda: None)
+_test_environment.setenv("CLOAKBROWSER_MANAGER_DATA_DIR", _test_data.name)
+_test_environment.setenv("AUTH_TOKEN", "")
+_test_environment.setenv("CLOAKBROWSER_LICENSE_KEY", "")
+_test_environment.setenv("REMOTE_ENVIRONMENT_ENABLED", "false")
+
+
+def pytest_unconfigure(config):
+    main = sys.modules.get("backend.main")
+    for handler in getattr(main, "_LOG_HANDLERS", []):
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+    _test_environment.undo()
+    _test_data.cleanup()
 
 # ---------------------------------------------------------------------------
 # Mock cloakbrowser BEFORE any backend module is imported.
