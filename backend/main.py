@@ -505,7 +505,7 @@ async def _remote_idle_loop():
         await asyncio.sleep(min(30, max(1, IDLE_SECONDS // 3)))
         now = time.monotonic()
         for pid, running in list(browser_mgr.running.items()):
-            if now - (running.last_activity or now) >= IDLE_SECONDS:
+            if (running.cdp_clients + running.vnc_clients) == 0 and now - (running.last_activity or now) >= IDLE_SECONDS:
                 logger.info("Stopping idle remote profile %s", pid)
                 await browser_mgr.stop(pid)
 
@@ -1179,6 +1179,7 @@ async def vnc_proxy(websocket: WebSocket, profile_id: str):
     requested = websocket.scope.get("subprotocols", [])
     subprotocol = "binary" if "binary" in requested else None
     await websocket.accept(subprotocol=subprotocol)
+    running.vnc_clients += 1
 
     import websockets
 
@@ -1320,6 +1321,7 @@ async def vnc_proxy(websocket: WebSocket, profile_id: str):
     except Exception as exc:
         logger.error("VNC proxy connect error for %s: %s: %s", profile_id, type(exc).__name__, exc)
     finally:
+        running.vnc_clients = max(0, running.vnc_clients - 1)
         try:
             await websocket.close()
         except Exception as exc:
@@ -1415,7 +1417,7 @@ async def cdp_json_list(profile_id: str, request: Request):
 
 
 async def _proxy_cdp_websocket(
-    websocket: WebSocket, target_url: str, label: str,
+    websocket: WebSocket, target_url: str, label: str, running=None,
 ) -> None:
     """Bidirectional WebSocket proxy between a FastAPI client and a CDP target.
 
@@ -1423,6 +1425,8 @@ async def _proxy_cdp_websocket(
     """
     import websockets
 
+    if running is not None:
+        running.cdp_clients += 1
     try:
         async with websockets.connect(
             target_url, max_size=None, ping_interval=None, ping_timeout=None
@@ -1468,6 +1472,8 @@ async def _proxy_cdp_websocket(
     except Exception as exc:
         logger.error("%s error: %s", label, exc)
     finally:
+        if running is not None:
+            running.cdp_clients = max(0, running.cdp_clients - 1)
         try:
             await websocket.close()
         except Exception as exc:
@@ -1499,7 +1505,7 @@ async def cdp_proxy(websocket: WebSocket, profile_id: str):
         await websocket.close(code=4005, reason="CDP not available")
         return
 
-    await _proxy_cdp_websocket(websocket, ws_url, f"CDP proxy [{profile_id}]")
+    await _proxy_cdp_websocket(websocket, ws_url, f"CDP proxy [{profile_id}]", running)
 
 
 @app.websocket("/api/profiles/{profile_id}/cdp/devtools/{path:path}")
@@ -1516,7 +1522,7 @@ async def cdp_page_proxy(websocket: WebSocket, profile_id: str, path: str):
     await websocket.accept()
 
     target_url = f"ws://127.0.0.1:{running.cdp_port}/devtools/{path}"
-    await _proxy_cdp_websocket(websocket, target_url, f"CDP page proxy [{profile_id}]")
+    await _proxy_cdp_websocket(websocket, target_url, f"CDP page proxy [{profile_id}]", running)
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────

@@ -317,6 +317,8 @@ class RunningProfile:
     # license denial apart from a real crash or a user-initiated close.
     denial_path: str | None = None
     last_activity: float = 0.0
+    cdp_clients: int = 0
+    vnc_clients: int = 0
 
 
 class BrowserManager:
