@@ -63,7 +63,7 @@ def start_proxy(profile: dict[str, Any]) -> str | None:
     config_dir = Path(profile["user_data_dir"]) / ".mihomo"
     config_dir.mkdir(parents=True, exist_ok=True)
     cfg = {"mixed-port": port, "allow-lan": False, "proxies": chain,
-           "proxy-groups": [{"name": "PROFILE", "type": "select", "proxies": [p.get("name") for p in chain if p.get("name") and not p.get("dialer-proxy")]}],
+           "proxy-groups": [{"name": "PROFILE", "type": "select", "proxies": [chain[-1].get("name")] if chain else []}],
            "rules": ["MATCH,PROFILE"]}
     path = config_dir / "config.yaml"
     # JSON is valid YAML and avoids a hard dependency on a YAML package.
