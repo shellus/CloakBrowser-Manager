@@ -66,6 +66,7 @@ from .models import (
 from .runtime import bundle_dir
 from .settings_store import load_settings, save_settings
 from .remote_environment import ENABLED as REMOTE_ENABLED, IDLE_SECONDS, environment_info, restore_profile, sync_status
+from . import remote_environment as remote
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -110,6 +111,8 @@ diagnostics.install_stderr_tee()
 # (except /api/auth/status, /api/auth/login and /api/health) require Bearer
 # token or cookie.
 AUTH_TOKEN: str | None = os.environ.get("AUTH_TOKEN") or None
+if REMOTE_ENABLED and not AUTH_TOKEN:
+    raise RuntimeError("AUTH_TOKEN is required when REMOTE_ENVIRONMENT_ENABLED is true")
 DEFAULT_SIDEBAR_WIDTH = "16rem"
 _SIDEBAR_WIDTH_RE = re.compile(r"^\d+(?:\.\d+)?(?:px|rem|em|vw)$")
 
@@ -505,18 +508,19 @@ async def _remote_idle_loop():
         await asyncio.sleep(min(30, max(1, IDLE_SECONDS // 3)))
         now = time.monotonic()
         for pid, running in list(browser_mgr.running.items()):
-            if (running.cdp_clients + running.vnc_clients) == 0 and now - (running.last_activity or now) >= IDLE_SECONDS:
+            if running.idle_due(now, IDLE_SECONDS):
                 logger.info("Stopping idle remote profile %s", pid)
-                await browser_mgr.stop(pid)
+                try:
+                    await browser_mgr.stop(pid)
+                except Exception:
+                    logger.exception("Idle profile stop/sync failed for %s", pid)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     browser_mgr.vnc.validate_available()
     db.init_db()
-    if REMOTE_ENABLED:
-        for profile in db.list_profiles():
-            restore_profile(profile)
+    await asyncio.to_thread(remote.rebuild_profiles)
     await browser_mgr.cleanup_stale()
     # Resolve tier + pre-download the (Pro) binary before serving launches, so the
     # download never blocks a launch or auto-launch's 60s timeout.
@@ -626,7 +630,9 @@ async def create_profile(req: ProfileCreate):
         data["tags"] = [t.model_dump() if hasattr(t, "model_dump") else t for t in tags]
     else:
         data["tags"] = []
-    return _profile_response(db.create_profile(**data))
+    profile = db.create_profile(**data)
+    await remote.push_profile_async(profile)
+    return _profile_response(profile)
 
 
 @app.post("/api/profiles/reorder")
@@ -653,6 +659,9 @@ async def update_profile(profile_id: str, req: ProfileUpdate):
     profile = db.update_profile(profile_id, **data)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    remote.mark_dirty(profile_id)
+    if profile_id not in browser_mgr.running:
+        await remote.push_profile_async(profile)
     return _profile_response(profile)
 
 
@@ -667,6 +676,8 @@ async def delete_profile(profile_id: str):
         raise HTTPException(status_code=404, detail="Profile not found")
 
     user_data_dir = Path(profile["user_data_dir"])
+
+    await asyncio.to_thread(remote.delete_profile, profile_id)
 
     # DB first — if this fails, filesystem is untouched
     db.delete_profile(profile_id)
@@ -736,6 +747,7 @@ async def reset_profile(profile_id: str):
     updated = db.reset_profile(profile_id)
     if not updated:
         raise HTTPException(status_code=500, detail="Failed to reset profile")
+    await remote.push_profile_async(updated)
     return _profile_response(updated)
 
 
@@ -751,6 +763,7 @@ async def duplicate_profile(profile_id: str):
     clone = db.duplicate_profile(profile_id)
     if not clone:
         raise HTTPException(status_code=500, detail="Failed to duplicate profile")
+    await remote.push_profile_async(clone)
     return _profile_response(clone)
 
 
@@ -1180,7 +1193,7 @@ async def vnc_proxy(websocket: WebSocket, profile_id: str):
     requested = websocket.scope.get("subprotocols", [])
     subprotocol = "binary" if "binary" in requested else None
     await websocket.accept(subprotocol=subprotocol)
-    running.vnc_clients += 1
+    running.client_connected("vnc")
 
     import websockets
 
@@ -1322,7 +1335,7 @@ async def vnc_proxy(websocket: WebSocket, profile_id: str):
     except Exception as exc:
         logger.error("VNC proxy connect error for %s: %s: %s", profile_id, type(exc).__name__, exc)
     finally:
-        running.vnc_clients = max(0, running.vnc_clients - 1)
+        running.client_disconnected("vnc")
         try:
             await websocket.close()
         except Exception as exc:
@@ -1427,7 +1440,7 @@ async def _proxy_cdp_websocket(
     import websockets
 
     if running is not None:
-        running.cdp_clients += 1
+        running.client_connected("cdp")
     try:
         async with websockets.connect(
             target_url, max_size=None, ping_interval=None, ping_timeout=None
@@ -1474,7 +1487,7 @@ async def _proxy_cdp_websocket(
         logger.error("%s error: %s", label, exc)
     finally:
         if running is not None:
-            running.cdp_clients = max(0, running.cdp_clients - 1)
+            running.client_disconnected("cdp")
         try:
             await websocket.close()
         except Exception as exc:

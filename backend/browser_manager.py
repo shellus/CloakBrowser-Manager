@@ -22,7 +22,7 @@ from cloakbrowser.license import (
 
 from .runtime import RuntimeConfig, resolve_runtime
 from .vnc_manager import VNCManager
-from .remote_environment import start_proxy, stop_proxy, push_profile_async
+from .remote_environment import start_proxy, stop_proxy, push_profile_async, restore_profile, mark_dirty, sync_status, sync_error, registry_enabled
 
 logger = logging.getLogger("cloakbrowser.manager.browser")
 
@@ -320,6 +320,17 @@ class RunningProfile:
     cdp_clients: int = 0
     vnc_clients: int = 0
 
+    def client_connected(self, kind: str) -> None:
+        setattr(self, kind + "_clients", getattr(self, kind + "_clients") + 1)
+
+    def client_disconnected(self, kind: str) -> None:
+        setattr(self, kind + "_clients", max(0, getattr(self, kind + "_clients") - 1))
+        if self.cdp_clients + self.vnc_clients == 0:
+            self.last_activity = time.monotonic()
+
+    def idle_due(self, now: float, seconds: int) -> bool:
+        return self.cdp_clients + self.vnc_clients == 0 and now - self.last_activity >= seconds
+
 
 class BrowserManager:
     def __init__(
@@ -345,6 +356,7 @@ class BrowserManager:
         # the reason. get_status() returns this so the frontend can show it.
         self._last_errors: dict[str, dict[str, str]] = {}
         self._launching: set[str] = set()  # profile IDs currently being launched
+        self._stopping: set[str] = set()
         self._initializing: set[str] = set()  # profile IDs in one-time first-launch setup
         self.vnc = VNCManager(self.runtime.viewer_mode == "vnc")
         self._lock = asyncio.Lock()
@@ -424,7 +436,7 @@ class BrowserManager:
         )
 
         async with self._lock:
-            if profile_id in self.running or profile_id in self._launching:
+            if profile_id in self.running or profile_id in self._launching or profile_id in self._stopping:
                 raise RuntimeError(f"Profile {profile_id} is already running")
             self._launching.add(profile_id)
             # Fresh attempt — drop any stale denial from a previous launch so the
@@ -436,9 +448,11 @@ class BrowserManager:
         cdp_port: int | None = None
         context: Any | None = None
         try:
-            remote_proxy = start_proxy(profile)
+            await asyncio.to_thread(restore_profile, profile)
+            remote_proxy = await asyncio.to_thread(start_proxy, profile)
             if remote_proxy:
                 profile = {**profile, "proxy": remote_proxy}
+            mark_dirty(profile_id)
             if self.runtime.viewer_mode == "vnc":
                 display, ws_port = await self.vnc.allocate()
 
@@ -637,6 +651,7 @@ class BrowserManager:
             return running
 
         except BaseException:
+            stop_proxy(profile_id)
             async with self._lock:
                 self._launching.discard(profile_id)
             if context is not None:
@@ -850,6 +865,13 @@ class BrowserManager:
 
         logger.info("Browser closed for profile %s, cleaning up", profile_id)
         await self._dispose_running(running, close_context=True)
+        stop_proxy(profile_id)
+        if not registry_enabled():
+            return
+        from . import database as db
+        profile = db.get_profile(profile_id)
+        if profile:
+            await push_profile_async(profile)
 
     def _denial_error(self, denial_path: str | None) -> CloakBrowserLicenseError | None:
         """Read the wrapper's denial file → a license error, or None.
@@ -880,6 +902,8 @@ class BrowserManager:
         # Pop before close so the close event observes an already-clean state.
         async with self._lock:
             running = self.running.pop(profile_id, None)
+            if running:
+                self._stopping.add(profile_id)
 
         if not running:
             return
@@ -889,31 +913,40 @@ class BrowserManager:
         # path can't screenshot — the browser is already gone by then).
         if running.capture_preview:
             try:
-                await self._capture_screenshot(running)
+                await asyncio.wait_for(self._capture_screenshot(running), timeout=5)
             except Exception as exc:
                 logger.debug(
                     "Final preview screenshot failed for %s: %s", profile_id, exc
                 )
-        await self._dispose_running(running, close_context=True)
-        stop_proxy(profile_id)
         try:
+            await self._dispose_running(running, close_context=True)
+            stop_proxy(profile_id)
+            if not registry_enabled():
+                return
             from . import database as db
             profile = db.get_profile(profile_id)
             if profile:
                 await push_profile_async(profile)
         except Exception as exc:
             logger.warning("Remote profile persistence failed for %s: %s", profile_id, exc)
+            raise
+        finally:
+            self._stopping.discard(profile_id)
 
     def get_status(self, profile_id: str) -> dict[str, Any]:
         """Get running status and viewer capabilities for a profile."""
         running = self.running.get(profile_id)
         if running:
             state = "running"
+        elif profile_id in self._stopping:
+            state = "stopping"
         elif profile_id in self._initializing:
             state = "initializing"
         else:
             state = "stopped"
         status = {
+            "sync_status": sync_status(profile_id),
+            "sync_error": sync_error(profile_id),
             "status": state,
             "runtime_mode": self.runtime.runtime_mode,
             "viewer_mode": self.runtime.viewer_mode,

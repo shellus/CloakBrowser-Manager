@@ -121,6 +121,8 @@ def test_get_status_stopped():
     status = mgr.get_status("nonexistent")
     assert status == {
         "status": "stopped",
+        "sync_status": "not_synced",
+        "sync_error": None,
         "runtime_mode": "docker",
         "viewer_mode": "vnc",
         "vnc_ws_port": None,
@@ -144,6 +146,8 @@ def test_get_status_running():
     status = mgr.get_status("abc")
     assert status == {
         "status": "running",
+        "sync_status": "not_synced",
+        "sync_error": None,
         "runtime_mode": "docker",
         "viewer_mode": "vnc",
         "vnc_ws_port": 6100,

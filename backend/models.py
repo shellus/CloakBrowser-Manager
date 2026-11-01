@@ -130,6 +130,7 @@ class ProfileResponse(BaseModel):
     # seats / bad key). {message, reason, upgrade_url?}. Cleared on next launch.
     last_error: dict[str, str] | None = None
     sync_status: str = "not_synced"
+    sync_error: str | None = None
 
 
 class LaunchResponse(BaseModel):
@@ -180,6 +181,8 @@ class SettingsUpdate(BaseModel):
 
 class ProfileStatusResponse(BaseModel):
     status: str
+    sync_status: str = "not_synced"
+    sync_error: str | None = None
     runtime_mode: RuntimeMode
     viewer_mode: ViewerMode
     vnc_ws_port: int | None = None

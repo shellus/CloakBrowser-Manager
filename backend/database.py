@@ -216,6 +216,23 @@ def create_profile(name: str, fingerprint_seed: int | None = None, **fields: Any
     return profile
 
 
+def import_profile(profile: dict[str, Any]) -> None:
+    """Restore registry metadata, rebasing the host-local data path."""
+    values = {key: profile[key] for key in _PROFILE_COLUMNS}
+    values["user_data_dir"] = str(DATA_DIR / "profiles" / profile["id"])
+    for key in ("proxy_chain", "launch_args", "extension_paths"):
+        values[key] = json.dumps(values[key] or [])
+    with get_db() as conn:
+        conn.execute(
+            f"INSERT INTO profiles ({', '.join(_PROFILE_COLUMNS)}) VALUES ({', '.join('?' for _ in _PROFILE_COLUMNS)})",
+            [values[key] for key in _PROFILE_COLUMNS],
+        )
+        for tag in profile.get("tags", []):
+            conn.execute("INSERT INTO profile_tags (profile_id, tag, color) VALUES (?, ?, ?)",
+                         (profile["id"], tag["tag"], tag.get("color")))
+        conn.commit()
+
+
 def _hydrate_profile(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     profile = dict(row)
     profile["launch_args"] = _json_list(profile.get("launch_args"))

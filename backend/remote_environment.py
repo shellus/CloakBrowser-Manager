@@ -1,11 +1,19 @@
-"""Optional remote-environment support.
-
-All features are disabled unless REMOTE_ENVIRONMENT_ENABLED is true.  The
-registry is deliberately command based so the same code works on Linux and
-Windows when crane/mihomo paths are configured explicitly.
-"""
+﻿"""Opt-in per-profile proxy processes and registry snapshots (Linux/Windows)."""
 from __future__ import annotations
-import asyncio, json, logging, os, shutil, subprocess, tarfile, tempfile
+
+import asyncio
+import copy
+import io
+import json
+import logging
+import os
+import shutil
+import socket
+import subprocess
+import tarfile
+import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,77 +25,227 @@ MIHOMO_PATH = os.environ.get("MIHOMO_PATH", "mihomo")
 CRANE_PATH = os.environ.get("CRANE_PATH", "crane")
 REGISTRY = os.environ.get("PROFILE_REGISTRY", "")
 REGISTRY_PREFIX = os.environ.get("PROFILE_REGISTRY_PREFIX", "profile")
-HOST_OS = "windows" if os.name == "nt" else "linux"
+METADATA_FILE = ".manager-profile.json"
 _processes: dict[str, subprocess.Popen] = {}
+_proxy_dirs: dict[str, Path] = {}
 _sync_status: dict[str, str] = {}
+_sync_errors: dict[str, str] = {}
+_published: set[str] = set()
+
+
+def registry_enabled() -> bool:
+    return ENABLED and STORAGE == "registry"
+
 
 def sync_status(profile_id: str) -> str:
     return _sync_status.get(profile_id, "not_synced")
 
-def environment_info(version: str | None = None) -> dict[str, Any]:
-    return {"host_os": HOST_OS, "storage": STORAGE if ENABLED else "local",
-            "idle_stop_seconds": IDLE_SECONDS, "remote_view": HOST_OS == "linux",
-            "version": version or "unknown"}
 
-def _run(*args: str) -> None:
-    subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def sync_error(profile_id: str) -> str | None:
+    return _sync_errors.get(profile_id)
+
+
+def mark_dirty(profile_id: str) -> None:
+    if registry_enabled():
+        _sync_status[profile_id] = "not_synced"
+        _sync_errors.pop(profile_id, None)
+
+
+def environment_info(version: str | None = None) -> dict[str, Any]:
+    from .runtime import resolve_runtime
+    runtime = resolve_runtime()
+    return {"host_os": runtime.host_os, "storage": STORAGE if ENABLED else "local",
+            "idle_stop_seconds": IDLE_SECONDS if ENABLED else 0,
+            "remote_view": runtime.viewer_mode == "vnc", "version": version or "unknown"}
+
+
+def _run(*args: str) -> str:
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if result.returncode:
+        raise RuntimeError(f"{Path(args[0]).name} {args[1]} failed: " + result.stderr.decode("utf-8", errors="replace"))
+    return result.stdout.decode("utf-8")
+
 
 def _tag(profile_id: str) -> str:
     return f"{REGISTRY.rstrip('/')}/{REGISTRY_PREFIX}:{profile_id}"
 
-def restore_profile(profile: dict[str, Any]) -> None:
-    if not (ENABLED and STORAGE == "registry" and REGISTRY): return
-    target = Path(profile["user_data_dir"])
-    if target.exists() and any(target.iterdir()): return
-    target.mkdir(parents=True, exist_ok=True)
+
+def _extract(archive: Path, target: Path) -> dict | None:
+    with tarfile.open(archive, "r:*") as tar:
+        members = tar.getmembers()
+        for member in members:
+            dest = (target / member.name).resolve()
+            if not dest.is_relative_to(target.resolve()) or member.issym() or member.islnk():
+                raise ValueError(f"Invalid profile archive member: {member.name}")
+        metadata = next((m for m in members if Path(m.name).name == METADATA_FILE), None)
+        if metadata is None:
+            return None
+        profile = json.load(tar.extractfile(metadata))
+        tar.extractall(target, members=members, filter="data")
+        return profile
+
+
+def rebuild_profiles() -> None:
+    """Rebuild a disposable SQLite index from self-contained profile tags."""
+    if not registry_enabled():
+        return
+    if not REGISTRY:
+        raise ValueError("PROFILE_REGISTRY is required for registry storage")
+    from . import database as db
     try:
+        tags = _run(CRANE_PATH, "ls", f"{REGISTRY.rstrip('/')}/{REGISTRY_PREFIX}").splitlines()
+    except RuntimeError as exc:
+        if "NAME_UNKNOWN" in str(exc):
+            return
+        raise
+    for tag in tags:
+        try:
+            uuid.UUID(tag)
+        except ValueError:
+            continue
+        _published.add(tag)
+        if db.get_profile(tag):
+            continue
         with tempfile.TemporaryDirectory() as td:
-            archive = Path(td) / "profile.tar.gz"
-            _run(CRANE_PATH, "export", _tag(profile["id"]), str(archive))
-            with tarfile.open(archive, "r:gz") as tar: tar.extractall(target)
-    except Exception as exc: log.warning("registry restore failed for %s: %s", profile["id"], exc)
+            archive = Path(td) / "profile.tar"
+            _run(CRANE_PATH, "export", _tag(tag), str(archive))
+            staged = Path(td) / "staged"
+            staged.mkdir()
+            profile = _extract(archive, staged)
+            if profile is None:
+                log.info("Skipping legacy tag without Manager metadata: %s", tag)
+                continue
+            if profile["id"] != tag:
+                raise ValueError("Profile metadata ID does not match registry tag")
+            target = db.DATA_DIR / "profiles" / tag
+            if target.exists():
+                raise RuntimeError(f"Unindexed local profile directory exists: {tag}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(staged, target)
+            db.import_profile(profile)
+            _sync_status[tag] = "synced"
+
+
+def restore_profile(profile: dict[str, Any]) -> None:
+    if not registry_enabled():
+        return
+    target = Path(profile["user_data_dir"])
+    if target.exists() and any(target.iterdir()):
+        return
+    if sync_status(profile["id"]) != "synced":
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        archive = Path(td) / "profile.tar"
+        _run(CRANE_PATH, "export", _tag(profile["id"]), str(archive))
+        if _extract(archive, target) is None:
+            raise RuntimeError("Registry profile is missing Manager metadata")
+
 
 def push_profile(profile: dict[str, Any]) -> None:
-    if not (ENABLED and STORAGE == "registry" and REGISTRY): return
-    target = Path(profile["user_data_dir"])
-    if not target.exists(): return
+    if not registry_enabled():
+        return
+    pid = profile["id"]
+    _sync_status[pid] = "syncing"
     try:
-        _sync_status[profile["id"]] = "syncing"
+        target = Path(profile["user_data_dir"])
+        preferences = target / "Default" / "Preferences"
+        if preferences.exists():
+            exit_type = json.loads(preferences.read_text(encoding="utf-8")).get("profile", {}).get("exit_type")
+            if exit_type != "Normal":
+                raise RuntimeError(f"Profile exit_type must be Normal before sync, got {exit_type!r}")
         with tempfile.TemporaryDirectory() as td:
             archive = Path(td) / "profile.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar: tar.add(target, arcname=".")
-            _run(CRANE_PATH, "append", "-f", str(archive), "-t", _tag(profile["id"]))
-            _sync_status[profile["id"]] = "synced"
-    except Exception as exc: log.warning("registry push failed for %s: %s", profile["id"], exc)
-    if _sync_status.get(profile["id"]) == "syncing":
-        _sync_status[profile["id"]] = "failed"
+            excluded = {"Cache", "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache",
+                        "GraphiteDawnCache", "DawnGraphiteCache", "DawnWebGPUCache", ".mihomo"}
+            def keep(info):
+                if any(p in excluded or p.startswith("Singleton") for p in Path(info.name).parts):
+                    return None
+                return info if not (info.issym() or info.islnk()) else None
+            with tarfile.open(archive, "w:gz") as tar:
+                if target.exists():
+                    for child in target.iterdir():
+                        if child.name != METADATA_FILE:
+                            tar.add(child, arcname=child.name, filter=keep)
+                payload = json.dumps(profile, ensure_ascii=False).encode("utf-8")
+                info = tarfile.TarInfo(METADATA_FILE)
+                info.size = len(payload)
+                tar.addfile(info, io.BytesIO(payload))
+            _run(CRANE_PATH, "append", "-f", str(archive), "-t", _tag(pid))
+        _sync_status[pid] = "synced"
+        _published.add(pid)
+        _sync_errors.pop(pid, None)
+        log.info("Profile registry sync complete: %s", pid)
+    except Exception as exc:
+        _sync_status[pid] = "failed"
+        _sync_errors[pid] = str(exc)
+        log.error("Profile registry sync failed for %s: %s", pid, exc)
+        raise
+
+
+def delete_profile(profile_id: str) -> None:
+    if registry_enabled() and profile_id in _published:
+        _run(CRANE_PATH, "delete", _tag(profile_id))
+    _published.discard(profile_id)
+    _sync_status.pop(profile_id, None)
+    _sync_errors.pop(profile_id, None)
+
+
+def proxy_config(chain: list[dict], port: int) -> dict:
+    proxies = copy.deepcopy(chain)
+    for i, proxy in enumerate(proxies):
+        proxy["name"] = f"hop-{i}"
+        proxy.pop("dialer-proxy", None)
+        if i:
+            proxy["dialer-proxy"] = f"hop-{i - 1}"
+    return {"mixed-port": port, "bind-address": "127.0.0.1", "allow-lan": False,
+            "mode": "rule", "proxies": proxies, "rules": [f"MATCH,hop-{len(proxies) - 1}"]}
+
 
 def start_proxy(profile: dict[str, Any]) -> str | None:
     chain = profile.get("proxy_chain") or []
-    if not (ENABLED and chain): return None
-    # mihomo relay groups provide the ordered chain.  The generated config is
-    # per profile and removed with the profile process.
-    port = 20000 + (abs(hash(profile["id"])) % 20000)
-    config_dir = Path(profile["user_data_dir"]) / ".mihomo"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    cfg = {"mixed-port": port, "allow-lan": False, "proxies": chain,
-           "proxy-groups": [{"name": "PROFILE", "type": "select", "proxies": [chain[-1].get("name")] if chain else []}],
-           "rules": ["MATCH,PROFILE"]}
-    path = config_dir / "config.yaml"
-    # JSON is valid YAML and avoids a hard dependency on a YAML package.
-    path.write_text(json.dumps(cfg), encoding="utf-8")
+    if not (ENABLED and chain):
+        return None
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    directory = Path(tempfile.mkdtemp(prefix="manager-mihomo-"))
+    _proxy_dirs[profile["id"]] = directory
+    config = directory / "config.yaml"
+    config.write_text(json.dumps(proxy_config(chain, port)), encoding="utf-8")
+    log_path = directory / "mihomo.log"
     try:
-        _processes[profile["id"]] = subprocess.Popen([MIHOMO_PATH, "-d", str(config_dir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return f"http://127.0.0.1:{port}"
-    except Exception as exc:
-        log.warning("mihomo start failed for %s: %s", profile["id"], exc); return None
+        with log_path.open("wb") as output:
+            proc = subprocess.Popen([MIHOMO_PATH, "-d", str(directory), "-f", str(config)], stdout=output, stderr=subprocess.STDOUT)
+        _processes[profile["id"]] = proc
+        until = time.monotonic() + 10
+        while time.monotonic() < until:
+            if proc.poll() is not None:
+                raise RuntimeError("mihomo exited: " + log_path.read_text(encoding="utf-8"))
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                    return f"http://127.0.0.1:{port}"
+            except OSError:
+                time.sleep(.05)
+        raise RuntimeError("mihomo listener did not become ready")
+    except BaseException:
+        stop_proxy(profile["id"])
+        raise
+
 
 def stop_proxy(profile_id: str) -> None:
     proc = _processes.pop(profile_id, None)
-    if proc:
+    if proc and proc.poll() is None:
         proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+    directory = _proxy_dirs.pop(profile_id, None)
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
+
 
 async def push_profile_async(profile: dict[str, Any]) -> None:
     await asyncio.to_thread(push_profile, profile)
