@@ -18,7 +18,7 @@ DATA_DIR = RUNTIME.data_dir
 DB_PATH = DATA_DIR / "profiles.db"
 
 _PROFILE_COLUMNS = (
-    "id", "name", "fingerprint_seed", "proxy", "timezone", "locale",
+    "id", "name", "fingerprint_seed", "proxy", "proxy_chain", "timezone", "locale",
     "screen_width", "screen_height", "gpu_family", "humanize", "human_preset",
     "geoip", "clipboard_sync", "auto_launch", "color_scheme", "launch_args",
     "extension_paths", "allow_3p_cookies", "set_google_default", "capture_preview",
@@ -31,6 +31,7 @@ CREATE TABLE profiles (
     name TEXT NOT NULL,
     fingerprint_seed INTEGER NOT NULL,
     proxy TEXT,
+    proxy_chain TEXT,
     timezone TEXT,
     locale TEXT,
     screen_width INTEGER DEFAULT 1920,
@@ -179,7 +180,7 @@ def create_profile(name: str, fingerprint_seed: int | None = None, **fields: Any
     tags = fields.pop("tags", None) or []
     values = {
         "id": profile_id, "name": name, "fingerprint_seed": seed,
-        "proxy": fields.get("proxy"), "timezone": fields.get("timezone"), "locale": fields.get("locale"),
+        "proxy": fields.get("proxy"), "proxy_chain": json.dumps(fields.get("proxy_chain") or []), "timezone": fields.get("timezone"), "locale": fields.get("locale"),
         "screen_width": fields.get("screen_width", 1920), "screen_height": fields.get("screen_height", 1080),
         "gpu_family": fields.get("gpu_family", "auto"), "humanize": fields.get("humanize", False),
         "human_preset": fields.get("human_preset", "default"), "geoip": fields.get("geoip", True),
@@ -219,6 +220,7 @@ def _hydrate_profile(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, An
     profile = dict(row)
     profile["launch_args"] = _json_list(profile.get("launch_args"))
     profile["extension_paths"] = _json_list(profile.get("extension_paths"))
+    profile["proxy_chain"] = _json_list(profile.get("proxy_chain"))
     tags = conn.execute(
         "SELECT tag, color FROM profile_tags WHERE profile_id = ?",
         (profile["id"],),
@@ -255,7 +257,7 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
     if not get_profile(profile_id):
         return None
     tags = fields.pop("tags", None)
-    for key in ("launch_args", "extension_paths"):
+    for key in ("launch_args", "extension_paths", "proxy_chain"):
         if key in fields:
             fields[key] = json.dumps(fields[key] or [])
     update_cols = []

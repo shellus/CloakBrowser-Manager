@@ -22,6 +22,7 @@ from cloakbrowser.license import (
 
 from .runtime import RuntimeConfig, resolve_runtime
 from .vnc_manager import VNCManager
+from .remote_environment import start_proxy, stop_proxy, push_profile_async
 
 logger = logging.getLogger("cloakbrowser.manager.browser")
 
@@ -315,6 +316,7 @@ class RunningProfile:
     # context_async on the returned context). Read on close to tell a seat/
     # license denial apart from a real crash or a user-initiated close.
     denial_path: str | None = None
+    last_activity: float = 0.0
 
 
 class BrowserManager:
@@ -432,6 +434,9 @@ class BrowserManager:
         cdp_port: int | None = None
         context: Any | None = None
         try:
+            remote_proxy = start_proxy(profile)
+            if remote_proxy:
+                profile = {**profile, "proxy": remote_proxy}
             if self.runtime.viewer_mode == "vnc":
                 display, ws_port = await self.vnc.allocate()
 
@@ -599,6 +604,7 @@ class BrowserManager:
                 user_data_dir=user_data_dir,
                 capture_preview=bool(profile.get("capture_preview", True)),
                 denial_path=getattr(context, "_cloak_denial_path", None),
+                last_activity=time.monotonic(),
             )
             context.on(
                 "close",
@@ -887,6 +893,14 @@ class BrowserManager:
                     "Final preview screenshot failed for %s: %s", profile_id, exc
                 )
         await self._dispose_running(running, close_context=True)
+        stop_proxy(profile_id)
+        try:
+            from . import database as db
+            profile = db.get_profile(profile_id)
+            if profile:
+                await push_profile_async(profile)
+        except Exception as exc:
+            logger.warning("Remote profile persistence failed for %s: %s", profile_id, exc)
 
     def get_status(self, profile_id: str) -> dict[str, Any]:
         """Get running status and viewer capabilities for a profile."""

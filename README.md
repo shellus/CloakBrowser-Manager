@@ -233,6 +233,17 @@ The CDP URL is available from the running-profile view. The same browser session
 
 ## Remote Access
 
+### Remote environments
+
+Set `REMOTE_ENVIRONMENT_ENABLED=true` to enable the independent environment
+contract. `PROFILE_STORAGE=registry` persists each profile as
+`PROFILE_REGISTRY_PREFIX:<profile-id>` in `PROFILE_REGISTRY`; `CRANE_PATH` and
+`MIHOMO_PATH` select the platform binaries. `PROFILE_IDLE_STOP_SECONDS` closes
+idle profiles and pushes their data. `GET /api/environment` reports the active
+host, storage mode, idle timeout and viewer capability. Profiles accept
+`proxy_chain`, an ordered mihomo `proxies` array. These options are disabled by
+default and do not change local deployments.
+
 The container binds to localhost only. To access from a remote server:
 
 ```bash

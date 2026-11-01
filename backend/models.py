@@ -15,6 +15,7 @@ class ProfileCreate(BaseModel):
     name: str
     fingerprint_seed: int | None = None
     proxy: str | None = None
+    proxy_chain: list[dict] | None = None
     timezone: str | None = None
     locale: str | None = None
     screen_width: int = 1920
@@ -42,6 +43,7 @@ class ProfileUpdate(BaseModel):
     name: str | None = None
     fingerprint_seed: int | None = None
     proxy: str | None = Field(default=None)
+    proxy_chain: list[dict] | None = None
     timezone: str | None = Field(default=None)
     locale: str | None = Field(default=None)
     screen_width: int | None = None
@@ -89,6 +91,7 @@ class ProfileResponse(BaseModel):
     name: str
     fingerprint_seed: int
     proxy: str | None = None
+    proxy_chain: list[dict] | None = None
     timezone: str | None = None
     locale: str | None = None
     screen_width: int = 1920

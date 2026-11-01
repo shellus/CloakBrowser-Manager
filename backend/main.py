@@ -65,6 +65,7 @@ from .models import (
 )
 from .runtime import bundle_dir
 from .settings_store import load_settings, save_settings
+from .remote_environment import ENABLED as REMOTE_ENABLED, IDLE_SECONDS, environment_info, restore_profile
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -497,10 +498,25 @@ def _filter_rfb_client_messages(data: bytes) -> bytes:
     return bytes(result)
 
 
+async def _remote_idle_loop():
+    if not (REMOTE_ENABLED and IDLE_SECONDS > 0):
+        return
+    while True:
+        await asyncio.sleep(min(30, max(1, IDLE_SECONDS // 3)))
+        now = time.monotonic()
+        for pid, running in list(browser_mgr.running.items()):
+            if now - (running.last_activity or now) >= IDLE_SECONDS:
+                logger.info("Stopping idle remote profile %s", pid)
+                await browser_mgr.stop(pid)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     browser_mgr.vnc.validate_available()
     db.init_db()
+    if REMOTE_ENABLED:
+        for profile in db.list_profiles():
+            restore_profile(profile)
     await browser_mgr.cleanup_stale()
     # Resolve tier + pre-download the (Pro) binary before serving launches, so the
     # download never blocks a launch or auto-launch's 60s timeout.
@@ -508,17 +524,26 @@ async def lifespan(app: FastAPI):
     diagnostics.install_asyncio_handler(asyncio.get_running_loop(), logger)
     logger.info(diagnostics.startup_line(browser_mgr))
     browser_mgr._auto_launch_task = asyncio.create_task(browser_mgr.auto_launch_all())
+    browser_mgr._idle_task = asyncio.create_task(_remote_idle_loop())
     logger.info("CloakBrowser Manager started")
     yield
     logger.info("Shutting down — stopping all browsers...")
     if browser_mgr._auto_launch_task and not browser_mgr._auto_launch_task.done():
         browser_mgr._auto_launch_task.cancel()
         await asyncio.gather(browser_mgr._auto_launch_task, return_exceptions=True)
+    if getattr(browser_mgr, "_idle_task", None) and not browser_mgr._idle_task.done():
+        browser_mgr._idle_task.cancel()
+        await asyncio.gather(browser_mgr._idle_task, return_exceptions=True)
     await browser_mgr.cleanup_all()
 
 
 app = FastAPI(title="CloakBrowser Manager", lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
+
+@app.get("/api/environment")
+async def get_environment():
+    """Describe the capabilities of this Manager environment."""
+    return environment_info(browser_mgr.binary_version)
 
 
 # ── Authentication ────────────────────────────────────────────────────────────
