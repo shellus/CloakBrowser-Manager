@@ -65,7 +65,7 @@ from .models import (
 )
 from .runtime import bundle_dir
 from .settings_store import load_settings, save_settings
-from .remote_environment import ENABLED as REMOTE_ENABLED, IDLE_SECONDS, environment_info, restore_profile
+from .remote_environment import ENABLED as REMOTE_ENABLED, IDLE_SECONDS, environment_info, restore_profile, sync_status
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -600,6 +600,7 @@ async def auth_logout(request: Request, response: Response):
 def _profile_response(profile: dict) -> ProfileResponse:
     payload = {**profile, **browser_mgr.get_status(profile["id"])}
     payload["tags"] = [TagResponse(**tag) for tag in profile.get("tags", [])]
+    payload["sync_status"] = sync_status(profile["id"])
     return ProfileResponse(**payload)
 
 

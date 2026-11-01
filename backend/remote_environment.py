@@ -19,6 +19,10 @@ REGISTRY = os.environ.get("PROFILE_REGISTRY", "")
 REGISTRY_PREFIX = os.environ.get("PROFILE_REGISTRY_PREFIX", "profile")
 HOST_OS = "windows" if os.name == "nt" else "linux"
 _processes: dict[str, subprocess.Popen] = {}
+_sync_status: dict[str, str] = {}
+
+def sync_status(profile_id: str) -> str:
+    return _sync_status.get(profile_id, "not_synced")
 
 def environment_info(version: str | None = None) -> dict[str, Any]:
     return {"host_os": HOST_OS, "storage": STORAGE if ENABLED else "local",
@@ -48,11 +52,15 @@ def push_profile(profile: dict[str, Any]) -> None:
     target = Path(profile["user_data_dir"])
     if not target.exists(): return
     try:
+        _sync_status[profile["id"]] = "syncing"
         with tempfile.TemporaryDirectory() as td:
             archive = Path(td) / "profile.tar.gz"
             with tarfile.open(archive, "w:gz") as tar: tar.add(target, arcname=".")
             _run(CRANE_PATH, "append", "-f", str(archive), "-t", _tag(profile["id"]))
+            _sync_status[profile["id"]] = "synced"
     except Exception as exc: log.warning("registry push failed for %s: %s", profile["id"], exc)
+    if _sync_status.get(profile["id"]) == "syncing":
+        _sync_status[profile["id"]] = "failed"
 
 def start_proxy(profile: dict[str, Any]) -> str | None:
     chain = profile.get("proxy_chain") or []

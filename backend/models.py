@@ -129,6 +129,7 @@ class ProfileResponse(BaseModel):
     # Set when the profile's last launch closed on a license denial (out of
     # seats / bad key). {message, reason, upgrade_url?}. Cleared on next launch.
     last_error: dict[str, str] | None = None
+    sync_status: str = "not_synced"
 
 
 class LaunchResponse(BaseModel):
