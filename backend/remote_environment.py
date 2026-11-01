@@ -51,7 +51,7 @@ def push_profile(profile: dict[str, Any]) -> None:
         with tempfile.TemporaryDirectory() as td:
             archive = Path(td) / "profile.tar.gz"
             with tarfile.open(archive, "w:gz") as tar: tar.add(target, arcname=".")
-            _run(CRANE_PATH, "append", "-f", str(archive), _tag(profile["id"]))
+            _run(CRANE_PATH, "append", "-f", str(archive), "-t", _tag(profile["id"]))
     except Exception as exc: log.warning("registry push failed for %s: %s", profile["id"], exc)
 
 def start_proxy(profile: dict[str, Any]) -> str | None:
