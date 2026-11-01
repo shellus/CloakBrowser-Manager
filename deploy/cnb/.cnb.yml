@@ -1,0 +1,11 @@
+$:
+  vscode:
+    - docker:
+        build: .ide/Dockerfile
+      runner:
+        cpus: 8
+      services:
+        - vscode
+      stages:
+        - name: start manager
+          script: bash .ide/start-manager.sh

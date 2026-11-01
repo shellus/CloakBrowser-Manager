@@ -299,26 +299,36 @@ status responses expose `sync_status` (`not_synced`, `syncing`, `synced`, or
 before deleting an environment. Each profile uses one replaceable tag;
 deleting a profile deletes its published tag.
 
-CNB deployments keep `AUTH_TOKEN` outside Git in the private registry artifact
-`docker.cnb.cool/shellus666/browser-runtime/manager-secret:latest`. The CNB
-startup script pulls `manager.env` from that artifact with `CNB_TOKEN` and
-refuses to start if it is unavailable or lacks `AUTH_TOKEN`. Rotate the token by
-replacing that artifact, then cold-starting the environment.
+`deploy/cnb/` is a ready-to-copy CNB environment template. Copy its
+`.cnb.yml` and `.ide/` into the root of your own private CNB repository; the
+startup stage builds this branch, then serves Manager on port 8080 with
+registry storage under `docker.cnb.cool/<your-repo-slug>` and a 300 second idle
+stop. Rebuilds use the CNB image cache, so bump `CACHE_BUST` in
+`.ide/Dockerfile` to pick up new Manager commits.
 
-To write or rotate the artifact inside an authorized CNB environment (the env
-file is supplied privately, never committed):
+`AUTH_TOKEN` stays outside Git in the private registry artifact
+`docker.cnb.cool/<your-repo-slug>/manager-secret:latest`, containing one file
+`manager.env` with `AUTH_TOKEN=<token>`. The startup script pulls it with the
+container's `CNB_TOKEN` and refuses to start if it is unavailable or lacks
+`AUTH_TOKEN`. Publish it before the first start from any machine with `crane`
+and a CNB access token that can push to the repository:
 
 ```bash
 secret_dir=$(mktemp -d)
 install -m 600 /path/to/private/manager.env "$secret_dir/manager.env"
 tar -czf "$secret_dir/layer.tar.gz" -C "$secret_dir" manager.env
-printf '%s' "$CNB_TOKEN" | crane auth login docker.cnb.cool -u cnb --password-stdin
-crane append -f "$secret_dir/layer.tar.gz" -t "$MANAGER_SECRET_IMAGE"
+printf '%s' "$CNB_ACCESS_TOKEN" | crane auth login docker.cnb.cool -u cnb --password-stdin
+crane append -f "$secret_dir/layer.tar.gz"   -t docker.cnb.cool/<your-repo-slug>/manager-secret:latest
 rm -rf "$secret_dir"
 ```
 
-`MANAGER_SECRET_IMAGE` must match the startup script's artifact reference.
-Existing environments keep their current token until restarted.
+Rotate the token by publishing a replacement the same way, then cold-start the
+environment; running environments keep their current token until restarted.
+Start the environment with `POST /<your-repo-slug>/-/workspace/start` and JSON
+`{"branch":"main"}`, then read `business_id` from `GET /workspace/list`. The
+Manager URL is `https://<business_id>-8080.cnb.run`; it is public and protected
+only by `AUTH_TOKEN`. Wait for `sync_status` `synced` before stopping or
+deleting an environment.
 
 The container binds to localhost only. To access from a remote server:
 
