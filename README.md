@@ -244,6 +244,12 @@ host, storage mode, idle timeout and viewer capability. Profiles accept
 `proxy_chain`, an ordered mihomo `proxies` array. These options are disabled by
 default and do not change local deployments.
 
+CNB deployments keep `AUTH_TOKEN` outside Git in the private registry artifact
+`docker.cnb.cool/shellus666/browser-runtime/manager-secret:latest`. The CNB
+startup script pulls `manager.env` from that artifact with `CNB_TOKEN` and
+refuses to start if it is unavailable or lacks `AUTH_TOKEN`. Rotate the token by
+replacing that artifact, then cold-starting the environment.
+
 The container binds to localhost only. To access from a remote server:
 
 ```bash
