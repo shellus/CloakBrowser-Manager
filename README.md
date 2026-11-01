@@ -239,16 +239,43 @@ Set `REMOTE_ENVIRONMENT_ENABLED=true` to enable the independent environment
 contract. `PROFILE_STORAGE=registry` persists each profile as
 `PROFILE_REGISTRY_PREFIX:<profile-id>` in `PROFILE_REGISTRY`; `CRANE_PATH` and
 `MIHOMO_PATH` select the platform binaries. `PROFILE_IDLE_STOP_SECONDS` closes
-idle profiles and pushes their data. `GET /api/environment` reports the active
+profiles after the last CDP and VNC client has disconnected for that duration,
+then pushes their data. An open client prevents idle stopping even without API
+traffic. `GET /api/environment` reports the active
 host, storage mode, idle timeout and viewer capability. Profiles accept
 `proxy_chain`, an ordered mihomo `proxies` array. These options are disabled by
-default and do not change local deployments.
+default and do not change local deployments. Remote mode requires `AUTH_TOKEN`
+and refuses to start without it.
+
+Registry snapshots include profile metadata, tags, and browser session data.
+Startup rebuilds the disposable profile index from registry tags; legacy tags
+without Manager metadata are skipped. Cache directories are excluded. Browser
+data is published only after a normal close (`exit_type=Normal`). Profile and
+status responses expose `sync_status` (`not_synced`, `syncing`, `synced`, or
+`failed`) and `sync_error` (null or the persistence error). Wait for `synced`
+before deleting an environment. Each profile uses one replaceable tag;
+deleting a profile deletes its published tag.
 
 CNB deployments keep `AUTH_TOKEN` outside Git in the private registry artifact
 `docker.cnb.cool/shellus666/browser-runtime/manager-secret:latest`. The CNB
 startup script pulls `manager.env` from that artifact with `CNB_TOKEN` and
 refuses to start if it is unavailable or lacks `AUTH_TOKEN`. Rotate the token by
 replacing that artifact, then cold-starting the environment.
+
+To write or rotate the artifact inside an authorized CNB environment (the env
+file is supplied privately, never committed):
+
+```bash
+secret_dir=$(mktemp -d)
+install -m 600 /path/to/private/manager.env "$secret_dir/manager.env"
+tar -czf "$secret_dir/layer.tar.gz" -C "$secret_dir" manager.env
+printf '%s' "$CNB_TOKEN" | crane auth login docker.cnb.cool -u cnb --password-stdin
+crane append -f "$secret_dir/layer.tar.gz" -t "$MANAGER_SECRET_IMAGE"
+rm -rf "$secret_dir"
+```
+
+`MANAGER_SECRET_IMAGE` must match the startup script's artifact reference.
+Existing environments keep their current token until restarted.
 
 The container binds to localhost only. To access from a remote server:
 
