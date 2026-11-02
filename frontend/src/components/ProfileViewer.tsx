@@ -61,6 +61,7 @@ export function ProfileViewer({
   useEffect(() => {
     let rfb: any = null;
     let cancelled = false;
+    let frameTimer: ReturnType<typeof setTimeout>;
     if (focused) onConnectionChange?.("disconnected", "正在连接画面…");
     const connectTimeout = window.setTimeout(() => {
       if (!cancelled) {
@@ -89,12 +90,28 @@ export function ProfileViewer({
         rfb.showDotCursor = true;
 
         rfb.addEventListener("connect", () => {
-          if (!cancelled) { clearTimeout(connectTimeout); setConnected(true); onConnectionChange?.("connected"); }
+          if (cancelled) return;
+          setConnected(true);
+          if (!focused) { clearTimeout(connectTimeout); onConnectionChange?.("connected"); return; }
+          // The RFB handshake precedes the first framebuffer, and resizing clears
+          // the canvas. Keep the loading cover until an actual pixel is painted
+          // at the negotiated size; a transparent canvas is not a usable screen.
+          const awaitFrame = () => {
+            if (cancelled) return;
+            const container = containerRef.current;
+            const canvas = container?.querySelector("canvas");
+            const sizeMatches = canvas && container && canvas.width === Math.round(container.clientWidth) && canvas.height === Math.round(container.clientHeight);
+            const painted = sizeMatches && canvas.getContext("2d")?.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data[3];
+            if (painted) { clearTimeout(connectTimeout); onConnectionChange?.("connected"); }
+            else frameTimer = setTimeout(awaitFrame, 100);
+          };
+          frameTimer = setTimeout(awaitFrame, 100);
         });
 
         rfb.addEventListener("disconnect", () => {
           if (!cancelled) {
             setConnected(false);
+            clearTimeout(frameTimer);
             clearTimeout(connectTimeout);
             onConnectionChange?.("disconnected", "画面连接已断开。");
             onDisconnect();
@@ -117,6 +134,7 @@ export function ProfileViewer({
 
     return () => {
       cancelled = true;
+      clearTimeout(frameTimer);
       clearTimeout(connectTimeout);
       if (rfb) {
         try {
