@@ -290,6 +290,18 @@ host, storage mode, idle timeout and viewer capability. Profiles accept
 default and do not change local deployments. Remote mode requires `AUTH_TOKEN`
 and refuses to start without it.
 
+Running remote profiles accept `PUT /api/profiles/{id}/proxy-chain` with a
+nonempty `proxy_chain` array. The Manager validates the candidate before stopping
+the old Mihomo, then starts a replacement on the same loopback port. The browser
+and its tabs remain open; existing network connections are interrupted. This
+requires a profile launched with an independent proxy chain. Switching to or from
+direct access still requires a cold start. A failed replacement keeps the desired
+configuration and original port for retry, without falling back to direct access.
+`GET /api/profiles/{id}/proxy-chain` reports readiness, desired/applied configuration
+hashes and replacement support. Identical applied chains do not restart Mihomo;
+after an uncertain HTTP response, read this status before retrying. These endpoints
+use the existing authentication and require remote mode.
+
 Registry snapshots include profile metadata, tags, and browser session data.
 Startup rebuilds the disposable profile index from registry tags; legacy tags
 without Manager metadata are skipped. Cache directories are excluded. Browser
