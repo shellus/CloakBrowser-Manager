@@ -24,6 +24,10 @@ vi.mock("./hooks/useProfiles", () => ({
   useProfiles: vi.fn(),
 }));
 
+vi.mock("./components/NativeWindowStatus", () => ({
+  NativeWindowStatus: ({ profileId }: { profileId: string }) => <div data-testid="viewer">{profileId}</div>,
+}));
+
 const mockApi = api as typeof api & {
   authStatus: ReturnType<typeof vi.fn>;
   getConfig: ReturnType<typeof vi.fn>;
@@ -34,6 +38,7 @@ const mockApi = api as typeof api & {
 const mockUseProfiles = useProfiles as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/");
   mockApi.authStatus.mockResolvedValue({ auth_required: false, authenticated: false });
   mockApi.getConfig.mockResolvedValue({ sidebar_width: "20rem" });
   mockApi.getStatus.mockRejectedValue(new Error("not available in unit test"));
@@ -56,6 +61,16 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+  it("opens the requested profile viewer after authentication", async () => {
+    window.history.replaceState({}, "", "/?profile=remote-profile");
+    mockApi.authStatus.mockResolvedValue({ auth_required: true, authenticated: true });
+    mockUseProfiles.mockReturnValue({
+      ...mockUseProfiles(),
+      profiles: [{ id: "remote-profile", name: "Remote profile", status: "running", viewer_mode: "native", tags: [] }],
+    });
+    render(<App />);
+    expect((await screen.findByTestId("viewer")).textContent).toBe("remote-profile");
+  });
   it("applies the configured sidebar width", async () => {
     render(<App />);
 

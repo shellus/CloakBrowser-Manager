@@ -11,6 +11,7 @@ import hmac
 import logging
 import os
 import re
+import secrets
 import signal
 import struct
 import shutil
@@ -20,11 +21,11 @@ from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from http.cookies import SimpleCookie
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import starlette.requests
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -137,7 +138,9 @@ RELEASE_CHANNEL: str | None = _resolve_setting(
 )
 
 # Paths that bypass authentication even when AUTH_TOKEN is set
-_AUTH_EXEMPT = frozenset({"/api/auth/status", "/api/auth/login", "/api/health"})
+_AUTH_EXEMPT = frozenset({"/api/auth/status", "/api/auth/login", "/api/auth/remote-view", "/api/health"})
+_REMOTE_VIEW_TTL = 60
+_remote_view_tickets: dict[str, tuple[float, str]] = {}
 
 
 def _check_auth(scope: Scope) -> bool:
@@ -578,16 +581,51 @@ async def auth_login(body: LoginRequest, request: Request, response: Response):
         return {"ok": True}
     if not body.token or not hmac.compare_digest(body.token, AUTH_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid token")
-    is_https = _is_https(request)
+    _set_auth_cookie(request, response)
+    return {"ok": True}
+
+
+def _set_auth_cookie(request: Request, response: Response) -> None:
     response.set_cookie(
         key="auth_token",
         value=AUTH_TOKEN,
         httponly=True,
         samesite="strict",
-        secure=is_https,
+        secure=_is_https(request) or request.url.scheme == "https",
         path="/",
     )
-    return {"ok": True}
+
+
+@app.post("/api/profiles/{profile_id}/remote-view-ticket")
+async def remote_view_ticket(profile_id: str, response: Response):
+    if not AUTH_TOKEN:
+        raise HTTPException(status_code=409, detail="Authentication must be enabled")
+    if not db.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    now = time.monotonic()
+    for key, (expires, _) in list(_remote_view_tickets.items()):
+        if expires <= now:
+            del _remote_view_tickets[key]
+    if len(_remote_view_tickets) >= 1024:
+        raise HTTPException(status_code=429, detail="Too many pending tickets")
+    ticket = secrets.token_urlsafe(32)
+    _remote_view_tickets[ticket] = (now + _REMOTE_VIEW_TTL, profile_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"ticket": ticket, "expires_in": _REMOTE_VIEW_TTL}
+
+
+@app.get("/api/auth/remote-view")
+async def redeem_remote_view(ticket: str, request: Request):
+    # No await between lookup and removal: concurrent requests cannot reuse a ticket.
+    entry = _remote_view_tickets.pop(ticket, None)
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    if not AUTH_TOKEN or entry is None or entry[0] <= time.monotonic():
+        return JSONResponse({"detail": "Invalid or expired ticket"}, status_code=401, headers=headers)
+    if not db.get_profile(entry[1]):
+        return JSONResponse({"detail": "Profile not found"}, status_code=404, headers=headers)
+    response = RedirectResponse("/?" + urlencode({"profile": entry[1]}), status_code=303, headers=headers)
+    _set_auth_cookie(request, response)
+    return response
 
 
 @app.post("/api/auth/logout")

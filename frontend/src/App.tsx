@@ -99,8 +99,8 @@ interface AppContentProps {
 
 function AppContent({ authRequired, onLogout }: AppContentProps) {
   const { profiles, loading, error, create, update, remove, reorder, launch, stop, reset, duplicate } = useProfiles();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [view, setView] = useState<View>("empty");
+  const [selectedId, setSelectedId] = useState<string | null>(() => new URLSearchParams(window.location.search).get("profile"));
+  const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).has("profile") ? "view" : "empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
