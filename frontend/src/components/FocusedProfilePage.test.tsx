@@ -11,9 +11,12 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 it("pins the requested profile and title without management or switching controls", async () => {
  render(<FocusedProfilePage profileId="one" />);
  expect((await screen.findByTestId("viewer")).textContent).toContain("one");
- expect(document.title).toBe("person@example.test");
+ await waitFor(() => expect(document.title).toBe("person@example.test"));
  expect(screen.queryByLabelText("Profile sidebar")).toBeNull();
  expect(screen.queryByText("Launch")).toBeNull();
+ expect(document.querySelector('header')).toBeNull();
+ expect(screen.queryByRole('heading')).toBeNull();
+ expect(screen.queryByLabelText('进入全屏')).toBeNull();
  fireEvent.click(screen.getByText("connect"));
  await waitFor(() => expect(screen.queryByText("正在连接画面…", {selector:"h1"})).toBeNull());
  fireEvent.click(screen.getByText("disconnect"));

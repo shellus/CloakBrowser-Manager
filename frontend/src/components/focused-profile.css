@@ -1,14 +1,6 @@
 .focused-profile { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; background: #101112; color: #e6e8ec; }
-.focused-profile-bar { height: 36px; flex: 0 0 36px; display: flex; gap: 16px; align-items: center; padding: 0 12px; border-bottom: 1px solid #303338; background: #17191c; font-size: 12px; }
-.focused-profile-bar strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focused-profile-bar span { margin-left: auto; color: #bbc1ca; white-space: nowrap; }
-.focused-profile-bar .focused-connected { color: #6ee7b7; }
-.focused-profile-bar button { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 4px; color: #e6e8ec; }
-.focused-profile-bar button:hover { background: #303338; }
-.focused-profile-bar button:focus-visible { outline: 2px solid #9d99ff; outline-offset: -2px; }
 .focused-profile-screen { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .focused-profile-screen canvas { outline: none; }
 .focused-profile-overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: #101112f2; text-align: center; }
 .focused-profile-overlay h1 { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
 .focused-profile-overlay p { margin: 12px 0 20px; color: #bbc1ca; font-size: 13px; max-width: 40rem; }
-.focused-profile-notice { position: absolute; bottom: 16px; left: 16px; right: 16px; padding: 12px; background: #292c31; font-size: 13px; }

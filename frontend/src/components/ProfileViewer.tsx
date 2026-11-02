@@ -27,7 +27,6 @@ export function ProfileViewer({
 }: ProfileViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
-  const windowSizedRef = useRef(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -52,7 +51,6 @@ export function ProfileViewer({
           if (cancelled || current !== generation) return;
           try {
             await api.resizeViewer(profileId, width, height);
-            if (!cancelled && current === generation) windowSizedRef.current = true;
           }
           catch { if (!cancelled) onConnectionChange?.("disconnected", "调整远端窗口失败，请重新连接画面。"); }
         });
@@ -65,9 +63,6 @@ export function ProfileViewer({
   useEffect(() => {
     let rfb: any = null;
     let cancelled = false;
-    let frameTimer: ReturnType<typeof setTimeout>;
-    windowSizedRef.current = false;
-    if (focused) onConnectionChange?.("disconnected", "正在连接画面…");
     const connectTimeout = window.setTimeout(() => {
       if (!cancelled) {
         onConnectionChange?.("disconnected", "连接画面超时，请检查网络后重新连接。");
@@ -97,26 +92,13 @@ export function ProfileViewer({
         rfb.addEventListener("connect", () => {
           if (cancelled) return;
           setConnected(true);
-          if (!focused) { clearTimeout(connectTimeout); onConnectionChange?.("connected"); return; }
-          // The RFB handshake precedes the first framebuffer, and resizing clears
-          // the canvas. Keep the loading cover until an actual pixel is painted
-          // at the negotiated size; a transparent canvas is not a usable screen.
-          const awaitFrame = () => {
-            if (cancelled) return;
-            const container = containerRef.current;
-            const canvas = container?.querySelector("canvas");
-            const sizeMatches = canvas && container && canvas.width === Math.round(container.clientWidth) && canvas.height === Math.round(container.clientHeight);
-            const painted = windowSizedRef.current && sizeMatches && canvas.getContext("2d")?.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data[3];
-            if (painted) { clearTimeout(connectTimeout); onConnectionChange?.("connected"); }
-            else frameTimer = setTimeout(awaitFrame, 100);
-          };
-          frameTimer = setTimeout(awaitFrame, 100);
+          clearTimeout(connectTimeout);
+          onConnectionChange?.("connected");
         });
 
         rfb.addEventListener("disconnect", () => {
           if (!cancelled) {
             setConnected(false);
-            clearTimeout(frameTimer);
             clearTimeout(connectTimeout);
             onConnectionChange?.("disconnected", "画面连接已断开。");
             onDisconnect();
@@ -139,7 +121,6 @@ export function ProfileViewer({
 
     return () => {
       cancelled = true;
-      clearTimeout(frameTimer);
       clearTimeout(connectTimeout);
       if (rfb) {
         try {
