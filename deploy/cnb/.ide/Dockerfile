@@ -36,7 +36,7 @@ RUN echo "building ${CACHE_BUST}"
 RUN set -eux; git clone --depth 1 -b ${MANAGER_REF} https://github.com/shellus/CloakBrowser-Manager.git /app; \
     command -v npm || (apt-get update && apt-get install -y --no-install-recommends nodejs npm); \
     python3 -m venv /opt/manager-venv; \
-    /opt/manager-venv/bin/pip install --no-cache-dir -r /app/backend/requirements.txt; \
+    /opt/manager-venv/bin/pip install --no-cache-dir -r /app/backend/requirements.txt 'cloakbrowser[geoip]==0.6.5'; \
     cd /app/frontend && npm install && npm run build && rm -rf node_modules; \
     test -f /app/frontend/dist/index.html
 
