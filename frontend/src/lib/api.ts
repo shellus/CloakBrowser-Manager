@@ -200,7 +200,7 @@ export const api = {
       body: JSON.stringify({ ordered_ids: ids }),
     }),
 
-  getProfile: (id: string) => request<Profile>(`/api/profiles/${id}`),
+  getProfile: (id: string, signal?: AbortSignal) => request<Profile>(`/api/profiles/${encodeURIComponent(id)}`, { signal }),
 
   createProfile: (data: ProfileCreateData) =>
     request<Profile>("/api/profiles", {

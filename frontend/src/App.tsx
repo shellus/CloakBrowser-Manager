@@ -13,6 +13,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { LaunchErrorBanner } from "./components/LaunchErrorBanner";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { LoginPage } from "./components/LoginPage";
+import { FocusedProfilePage } from "./components/FocusedProfilePage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
@@ -22,6 +23,7 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
 };
 
 export default function App() {
+  const focusedProfileId = new URLSearchParams(window.location.search).get("focus");
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authRequired, setAuthRequired] = useState(false);
 
@@ -78,10 +80,12 @@ export default function App() {
   }
 
   if (authState === "required") {
+    if (focusedProfileId) return <main className="focused-profile"><div className="focused-profile-overlay"><div><h1>画面访问权限已过期</h1><p>请回到 BAM，重新打开此账号的画面。</p></div></div></main>;
     return <LoginPage onSuccess={() => setAuthState("ok")} />;
   }
 
   return (
+    focusedProfileId ? <FocusedProfilePage profileId={focusedProfileId} /> :
     <AppContent
       authRequired={authRequired}
       onLogout={async () => {

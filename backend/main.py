@@ -623,7 +623,7 @@ async def redeem_remote_view(ticket: str, request: Request):
         return JSONResponse({"detail": "Invalid or expired ticket"}, status_code=401, headers=headers)
     if not db.get_profile(entry[1]):
         return JSONResponse({"detail": "Profile not found"}, status_code=404, headers=headers)
-    response = RedirectResponse("/?" + urlencode({"profile": entry[1]}), status_code=303, headers=headers)
+    response = RedirectResponse("/?" + urlencode({"focus": entry[1]}), status_code=303, headers=headers)
     _set_auth_cookie(request, response)
     return response
 

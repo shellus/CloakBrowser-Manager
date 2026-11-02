@@ -90,7 +90,7 @@ def test_remote_view_ticket_cookie_target_and_single_use(client_auth, sample_pro
     url = "/api/auth/remote-view?ticket=" + issued.json()["ticket"]
     result = client_auth.get(url, follow_redirects=False, headers={"x-forwarded-proto": "https"})
     assert result.status_code == 303
-    assert result.headers["location"] == "/?profile=" + sample_profile["id"]
+    assert result.headers["location"] == "/?focus=" + sample_profile["id"]
     assert result.headers["cache-control"] == "no-store"
     assert result.headers["referrer-policy"] == "no-referrer"
     cookie = result.headers["set-cookie"]
@@ -114,7 +114,7 @@ def test_remote_view_ticket_expired_or_unknown(client_auth, sample_profile, monk
 def test_remote_view_target_cannot_be_overridden(client_auth, sample_profile):
     ticket = issue_view_ticket(client_auth, sample_profile["id"]).json()["ticket"]
     result = client_auth.get("/api/auth/remote-view", params={"ticket": ticket, "next": "//evil.example.test"}, follow_redirects=False)
-    assert result.headers["location"] == "/?profile=" + sample_profile["id"]
+    assert result.headers["location"] == "/?focus=" + sample_profile["id"]
 
 
 def test_auth_wrong_bearer_401(client_auth: TestClient):

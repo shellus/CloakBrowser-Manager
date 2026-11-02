@@ -9,6 +9,8 @@ interface ProfileViewerProps {
   clipboardSync: boolean;
   onClipboardSyncChange: (enabled: boolean) => Promise<void>;
   onDisconnect: () => void;
+  focused?: boolean;
+  onConnectionChange?: (state: "connected" | "disconnected", message?: string) => void;
 }
 
 // X11 keysym for V key (Ctrl is already held in VNC by the time we intercept)
@@ -20,6 +22,8 @@ export function ProfileViewer({
   clipboardSync: initialClipboardSync,
   onClipboardSyncChange,
   onDisconnect,
+  focused = false,
+  onConnectionChange,
 }: ProfileViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
@@ -33,6 +37,13 @@ export function ProfileViewer({
   useEffect(() => {
     let rfb: any = null;
     let cancelled = false;
+    if (focused) onConnectionChange?.("disconnected", "正在连接画面…");
+    const connectTimeout = window.setTimeout(() => {
+      if (!cancelled) {
+        onConnectionChange?.("disconnected", "连接画面超时，请检查网络后重新连接。");
+        rfb?.disconnect();
+      }
+    }, 30_000);
 
     async function connect() {
       try {
@@ -54,22 +65,26 @@ export function ProfileViewer({
         rfb.showDotCursor = true;
 
         rfb.addEventListener("connect", () => {
-          if (!cancelled) setConnected(true);
+          if (!cancelled) { clearTimeout(connectTimeout); setConnected(true); onConnectionChange?.("connected"); }
         });
 
         rfb.addEventListener("disconnect", () => {
           if (!cancelled) {
             setConnected(false);
+            clearTimeout(connectTimeout);
+            onConnectionChange?.("disconnected", "画面连接已断开。");
             onDisconnect();
           }
         });
 
         rfb.addEventListener("securityfailure", (e: any) => {
           setError(`Security failure: ${e.detail.reason}`);
+          onConnectionChange?.("disconnected", `画面认证失败：${e.detail.reason}`);
         });
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to connect");
+          onConnectionChange?.("disconnected", err instanceof Error ? err.message : "连接画面失败。");
         }
       }
     }
@@ -78,6 +93,7 @@ export function ProfileViewer({
 
     return () => {
       cancelled = true;
+      clearTimeout(connectTimeout);
       if (rfb) {
         try {
           rfb.disconnect();
@@ -87,7 +103,7 @@ export function ProfileViewer({
       }
       rfbRef.current = null;
     };
-  }, [profileId, onDisconnect]);
+  }, [profileId, onDisconnect, onConnectionChange]);
 
   // Host→VNC: intercept Ctrl+V/Cmd+V at keydown (capture phase)
   // Must fire BEFORE noVNC's canvas listener to prevent the race condition
@@ -249,7 +265,7 @@ export function ProfileViewer({
     return () => container.removeEventListener("wheel", handleWheel);
   }, []);
 
-  if (error) {
+  if (error && !focused) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
@@ -263,7 +279,7 @@ export function ProfileViewer({
   return (
     <div className="relative h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-1 border-b border-border">
+      {!focused && <div className="flex items-center justify-between px-3 py-1.5 bg-surface-1 border-b border-border">
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : "bg-yellow-400 animate-pulse"}`} />
           <span className="text-xs text-gray-400">
@@ -287,7 +303,7 @@ export function ProfileViewer({
             {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* VNC canvas container */}
       <div
