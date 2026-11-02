@@ -322,6 +322,17 @@ async def test_resize_viewer_fits_existing_windows_without_opening_pages():
 
 
 @pytest.mark.asyncio
+async def test_resize_viewer_corrects_initial_x11_border_rounding():
+    manager = BrowserManager(DOCKER_RUNTIME)
+    session = MagicMock(send=AsyncMock(return_value={"windowId": 7, "bounds": {"width": 1599, "height": 1063}}), detach=AsyncMock())
+    context = MagicMock(pages=[MagicMock()], new_cdp_session=AsyncMock(return_value=session))
+    manager.running["one"] = MagicMock(display=100, context=context)
+    await manager.resize_viewer("one", 1600, 1064)
+    assert session.send.await_args.args == ("Browser.setWindowBounds", {"windowId": 7, "bounds": {"left": 0, "top": 0, "width": 1601, "height": 1065}})
+    context.new_page.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_launch_passes_license_config(monkeypatch, tmp_path: Path):
     from backend import browser_manager as module
 

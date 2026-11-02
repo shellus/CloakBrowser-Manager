@@ -822,6 +822,12 @@ class BrowserManager:
                 windows.add(window_id)
                 await session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"windowState": "normal"}})
                 await session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"left": 0, "top": 0, "width": width, "height": height}})
+                # On the initial X11 resize Chromium can report a one-pixel
+                # smaller window. Correct only this observed border rounding.
+                actual = (await session.send("Browser.getWindowForTarget")).get("bounds", {})
+                dw, dh = width - actual.get("width", width), height - actual.get("height", height)
+                if (dw or dh) and 0 <= dw <= 2 and 0 <= dh <= 2:
+                    await session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"left": 0, "top": 0, "width": width + dw, "height": height + dh}})
             finally:
                 await session.detach()
 
