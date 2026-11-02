@@ -38,6 +38,11 @@ class ProfileCreate(BaseModel):
     tags: list[TagCreate] | None = None
 
 
+class ProxyChainUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proxy_chain: list[dict] = Field(min_length=1)
+
+
 class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

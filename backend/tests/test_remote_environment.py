@@ -9,6 +9,81 @@ import pytest
 from backend import database as db
 from backend import remote_environment as remote
 from backend.browser_manager import RunningProfile
+from backend.browser_manager import BrowserManager
+from unittest.mock import MagicMock
+
+
+@pytest.fixture()
+def proxy_runtime(monkeypatch):
+    for name in ("_processes", "_proxy_dirs", "_proxy_ports", "_proxy_versions"):
+        monkeypatch.setattr(remote, name, {})
+    monkeypatch.setattr(remote, "ENABLED", True)
+
+
+async def test_proxy_replacement_keeps_browser_and_listener_and_deduplicates(tmp_db, proxy_runtime, monkeypatch):
+    old = [{"type": "socks5", "server": "old.invalid", "port": 1080}]
+    chain = [{"type": "socks5", "server": "new.invalid", "port": 1080}]
+    profile = db.create_profile("Synthetic", proxy_chain=old)
+    pid = profile["id"]
+    manager = BrowserManager()
+    browser = RunningProfile(pid, MagicMock(), 40001)
+    manager.running[pid] = browser
+    remote._proxy_ports[pid] = 12345
+    proc = MagicMock()
+    proc.poll.return_value = None
+    remote._processes[pid] = proc
+    remote._proxy_versions[pid] = remote.chain_version(old)
+    monkeypatch.setattr(remote, "_run", lambda *args: "")
+    starts = []
+    def start(updated, *, port, prepared):
+        assert proc.terminate.call_count == 1
+        starts.append((port, json.loads((prepared / "config.yaml").read_text())))
+        remote._processes[pid] = proc
+        remote._proxy_versions[pid] = remote.chain_version(updated["proxy_chain"])
+    monkeypatch.setattr(remote, "start_proxy", start)
+    expected = {"ready": True, "applied_version": remote.chain_version(chain)}
+    assert await manager.apply_proxy_chain(pid, chain) == expected
+    assert await manager.apply_proxy_chain(pid, chain) == expected
+    assert len(starts) == 1
+    assert starts[0][0] == starts[0][1]["mixed-port"] == 12345
+    assert manager.running[pid] is browser
+    browser.context.close.assert_not_called()
+    assert db.get_profile(pid)["proxy_chain"] == chain
+
+
+async def test_invalid_chain_preserves_old_process_and_target(tmp_db, proxy_runtime, monkeypatch):
+    profile = db.create_profile("Synthetic", proxy_chain=[{"type": "socks5"}])
+    pid = profile["id"]
+    manager = BrowserManager()
+    manager.running[pid] = RunningProfile(pid, MagicMock(), 40001)
+    remote._proxy_ports[pid] = 12345
+    proc = MagicMock()
+    remote._processes[pid] = proc
+    monkeypatch.setattr(remote, "_run", MagicMock(side_effect=RuntimeError("invalid config")))
+    with pytest.raises(RuntimeError, match="invalid config"):
+        await manager.apply_proxy_chain(pid, [{"type": "unknown"}])
+    proc.terminate.assert_not_called()
+    assert db.get_profile(pid)["proxy_chain"] == profile["proxy_chain"]
+
+
+async def test_failed_replacement_keeps_port_for_retry_without_restoring_old_chain(tmp_db, proxy_runtime, monkeypatch):
+    profile = db.create_profile("Synthetic", proxy_chain=[{"type": "socks5"}])
+    pid = profile["id"]
+    manager = BrowserManager()
+    manager.running[pid] = RunningProfile(pid, MagicMock(), 40001)
+    remote._proxy_ports[pid] = 12345
+    proc = MagicMock()
+    proc.poll.return_value = None
+    remote._processes[pid] = proc
+    monkeypatch.setattr(remote, "_run", lambda *args: "")
+    chain = [{"type": "http", "server": "new.invalid", "port": 8080}]
+    monkeypatch.setattr(remote, "start_proxy", MagicMock(side_effect=RuntimeError("bind failed")))
+    with pytest.raises(RuntimeError, match="bind failed"):
+        await manager.apply_proxy_chain(pid, chain)
+    assert remote.proxy_status(pid) == {"ready": False, "applied_version": None}
+    assert remote.proxy_port(pid) == 12345
+    assert db.get_profile(pid)["proxy_chain"] == chain
+    assert pid in manager.running
 
 
 @pytest.fixture()

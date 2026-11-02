@@ -911,6 +911,40 @@ class BrowserManager:
         self._last_errors[profile_id] = license_error_detail(lic)
         logger.warning("Profile %s closed on a license denial: %s", profile_id, lic)
 
+    async def apply_proxy_chain(self, profile_id: str, chain: list[dict]) -> dict:
+        from . import database as db
+        from . import remote_environment as remote
+        # Serialize replacement with launch/stop ownership changes. Worker threads
+        # own the complete process transition even if an HTTP caller disconnects.
+        async with self._lock:
+            if profile_id in self._launching or profile_id in self._stopping:
+                raise ValueError("Profile is changing lifecycle state")
+            profile = db.get_profile(profile_id)
+            if not profile:
+                raise LookupError("Profile not found")
+            if profile_id not in self.running:
+                raise ValueError("Profile is not running")
+            port = remote.proxy_port(profile_id)
+            if port is None or not chain:
+                raise ValueError("Changing the browser proxy entry requires a cold start")
+            version = remote.chain_version(chain)
+            if remote.proxy_status(profile_id) == {"ready": True, "applied_version": version}:
+                return remote.proxy_status(profile_id)
+            prepared = await asyncio.to_thread(remote.prepare_proxy, chain, port)
+            try:
+                profile = db.update_profile(profile_id, proxy_chain=chain, proxy=None)
+                remote.mark_dirty(profile_id)
+            except BaseException:
+                shutil.rmtree(prepared, ignore_errors=True)
+                raise
+            replacement = asyncio.create_task(asyncio.to_thread(remote.replace_proxy, profile, prepared))
+            try:
+                await asyncio.shield(replacement)
+            except asyncio.CancelledError:
+                await replacement
+                raise
+            return remote.proxy_status(profile_id)
+
     async def stop(self, profile_id: str):
         """Stop a running browser instance and release all owned resources."""
         # Pop before close so the close event observes an already-clean state.

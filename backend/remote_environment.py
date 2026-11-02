@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import io
 import json
 import logging
@@ -28,6 +29,8 @@ REGISTRY_PREFIX = os.environ.get("PROFILE_REGISTRY_PREFIX", "profile")
 METADATA_FILE = ".manager-profile.json"
 _processes: dict[str, subprocess.Popen] = {}
 _proxy_dirs: dict[str, Path] = {}
+_proxy_ports: dict[str, int] = {}
+_proxy_versions: dict[str, str] = {}
 _sync_status: dict[str, str] = {}
 _sync_errors: dict[str, str] = {}
 _published: set[str] = set()
@@ -202,17 +205,32 @@ def proxy_config(chain: list[dict], port: int) -> dict:
             "mode": "rule", "proxies": proxies, "rules": [f"MATCH,hop-{len(proxies) - 1}"]}
 
 
-def start_proxy(profile: dict[str, Any]) -> str | None:
+def chain_version(chain: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(chain, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def proxy_status(profile_id: str) -> dict:
+    proc = _processes.get(profile_id)
+    ready = proc is not None and proc.poll() is None
+    return {"ready": ready, "applied_version": _proxy_versions.get(profile_id) if ready else None}
+
+
+def proxy_port(profile_id: str) -> int | None:
+    return _proxy_ports.get(profile_id)
+
+
+def start_proxy(profile: dict[str, Any], *, port: int | None = None, prepared: Path | None = None) -> str | None:
     chain = profile.get("proxy_chain") or []
     if not (ENABLED and chain):
         return None
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    directory = Path(tempfile.mkdtemp(prefix="manager-mihomo-"))
+    if port is None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+    _proxy_ports[profile["id"]] = port
+    directory = prepared or prepare_proxy(chain, port)
     _proxy_dirs[profile["id"]] = directory
     config = directory / "config.yaml"
-    config.write_text(json.dumps(proxy_config(chain, port)), encoding="utf-8")
     log_path = directory / "mihomo.log"
     try:
         with log_path.open("wb") as output:
@@ -224,17 +242,41 @@ def start_proxy(profile: dict[str, Any]) -> str | None:
                 raise RuntimeError("mihomo exited: " + log_path.read_text(encoding="utf-8"))
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                    _proxy_versions[profile["id"]] = chain_version(chain)
                     return f"http://127.0.0.1:{port}"
             except OSError:
                 time.sleep(.05)
         raise RuntimeError("mihomo listener did not become ready")
     except BaseException:
-        stop_proxy(profile["id"])
+        stop_proxy(profile["id"], preserve_port=True)
         raise
 
 
-def stop_proxy(profile_id: str) -> None:
-    proc = _processes.pop(profile_id, None)
+def prepare_proxy(chain: list[dict], port: int) -> Path:
+    directory = Path(tempfile.mkdtemp(prefix="manager-mihomo-"))
+    config = directory / "config.yaml"
+    try:
+        config.write_text(json.dumps(proxy_config(chain, port)), encoding="utf-8")
+        _run(MIHOMO_PATH, "-t", "-d", str(directory), "-f", str(config))
+        return directory
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+def replace_proxy(profile: dict[str, Any], prepared: Path) -> None:
+    profile_id = profile["id"]
+    port = _proxy_ports[profile_id]
+    try:
+        stop_proxy(profile_id, preserve_port=True)
+        start_proxy(profile, port=port, prepared=prepared)
+    finally:
+        if _proxy_dirs.get(profile_id) != prepared:
+            shutil.rmtree(prepared, ignore_errors=True)
+
+
+def stop_proxy(profile_id: str, *, preserve_port: bool = False) -> None:
+    proc = _processes.get(profile_id)
     if proc and proc.poll() is None:
         proc.terminate()
         try:
@@ -242,6 +284,10 @@ def stop_proxy(profile_id: str) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=3)
+    _processes.pop(profile_id, None)
+    _proxy_versions.pop(profile_id, None)
+    if not preserve_port:
+        _proxy_ports.pop(profile_id, None)
     directory = _proxy_dirs.pop(profile_id, None)
     if directory:
         shutil.rmtree(directory, ignore_errors=True)

@@ -53,6 +53,7 @@ from .models import (
     ProfileResponse,
     ProfileStatusResponse,
     ProfileUpdate,
+    ProxyChainUpdate,
     ProxyTestRequest,
     ProxyTestResponse,
     ReorderRequest,
@@ -663,6 +664,33 @@ async def update_profile(profile_id: str, req: ProfileUpdate):
     if profile_id not in browser_mgr.running:
         await remote.push_profile_async(profile)
     return _profile_response(profile)
+
+
+@app.get("/api/profiles/{profile_id}/proxy-chain")
+async def get_proxy_chain_status(profile_id: str):
+    if not remote.ENABLED:
+        raise HTTPException(status_code=404, detail="Remote environment is disabled")
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return {**remote.proxy_status(profile_id),
+            "desired_version": remote.chain_version(profile.get("proxy_chain") or []),
+            "replace_supported": remote.proxy_port(profile_id) is not None}
+
+
+@app.put("/api/profiles/{profile_id}/proxy-chain")
+async def update_proxy_chain(profile_id: str, req: ProxyChainUpdate):
+    if not remote.ENABLED:
+        raise HTTPException(status_code=404, detail="Remote environment is disabled")
+    try:
+        return await browser_mgr.apply_proxy_chain(profile_id, req.proxy_chain)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Proxy replacement failed for %s: %s", profile_id, exc)
+        raise HTTPException(status_code=503, detail="Proxy configuration was not applied") from exc
 
 
 @app.delete("/api/profiles/{profile_id}")
