@@ -13,6 +13,12 @@ export function FocusedProfilePage({ profileId }: { profileId: string }) {
   const [retry, setRetry] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [restartUrl, setRestartUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void api.getRemoteViewContext(profileId).then(result => { if (!cancelled) setRestartUrl(result.restart_url); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [profileId]);
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -60,7 +66,7 @@ export function FocusedProfilePage({ profileId }: { profileId: string }) {
     </header>
     <div className="focused-profile-screen">
       {running && !problem && <ProfileViewer key={`${profileId}:${retry}`} profileId={profileId} cdpUrl={profile.cdp_url} clipboardSync={profile.clipboard_sync} onClipboardSyncChange={async () => {}} onDisconnect={noAction} onConnectionChange={onConnectionChange} focused />}
-      {overlay && <div className="focused-profile-overlay" role="status"><div><h1>{overlay}</h1><p>{!profile && !problem ? "正在读取此 Profile 的运行状态。" : !running && profile ? "请回到 BAM，点击此账号的“启动并打开”。" : "此标签页始终连接当前账号，不会切换到其他 Profile。"}</p>{running && !problem && !connected && connection !== "正在连接画面…" && <button className="btn-secondary" onClick={() => { setConnection("正在连接画面…"); setRetry(value => value + 1); }}>重新连接画面</button>}</div></div>}
+      {overlay && <div className="focused-profile-overlay" role="status"><div><h1>{overlay}</h1><p>{!profile && !problem ? "正在读取此 Profile 的运行状态。" : !running && profile ? "通过 BAM 重新启动此账号，代理准备好后会自动回到画面。" : "此标签页始终连接当前账号，不会切换到其他 Profile。"}</p>{(!running || problem) && restartUrl && <a className="btn-secondary" href={restartUrl}>重新启动</a>}{running && !problem && !connected && connection !== "正在连接画面…" && <button className="btn-secondary" onClick={() => { setConnection("正在连接画面…"); setRetry(value => value + 1); }}>重新连接画面</button>}</div></div>}
     </div>
     {notice && <div className="focused-profile-notice" role="alert">{notice}</div>}
   </main>;

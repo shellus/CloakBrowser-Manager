@@ -35,6 +35,30 @@ export function ProfileViewer({
   useEffect(() => setClipboardSync(initialClipboardSync), [initialClipboardSync]);
 
   useEffect(() => {
+    const container = containerRef.current;
+    if (!focused || !connected || !container) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+    let generation = 0;
+    let pending = Promise.resolve();
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer);
+      const current = ++generation;
+      timer = setTimeout(() => {
+        const width = Math.round(container.clientWidth), height = Math.round(container.clientHeight);
+        if (width < 320 || height < 240) return;
+        pending = pending.then(async () => {
+          if (cancelled || current !== generation) return;
+          try { await api.resizeViewer(profileId, width, height); }
+          catch { if (!cancelled) onConnectionChange?.("disconnected", "调整远端窗口失败，请重新连接画面。"); }
+        });
+      }, 600);
+    });
+    observer.observe(container);
+    return () => { cancelled = true; clearTimeout(timer); observer.disconnect(); };
+  }, [focused, connected, profileId, onConnectionChange]);
+
+  useEffect(() => {
     let rfb: any = null;
     let cancelled = false;
     if (focused) onConnectionChange?.("disconnected", "正在连接画面…");
@@ -61,7 +85,7 @@ export function ProfileViewer({
         rfbRef.current = rfb;
 
         rfb.scaleViewport = true;
-        rfb.resizeSession = false;
+        rfb.resizeSession = focused;
         rfb.showDotCursor = true;
 
         rfb.addEventListener("connect", () => {

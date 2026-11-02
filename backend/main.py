@@ -7,6 +7,7 @@ for browser profile management with live VNC viewing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import logging
 import os
@@ -140,7 +141,7 @@ RELEASE_CHANNEL: str | None = _resolve_setting(
 # Paths that bypass authentication even when AUTH_TOKEN is set
 _AUTH_EXEMPT = frozenset({"/api/auth/status", "/api/auth/login", "/api/auth/remote-view", "/api/health"})
 _REMOTE_VIEW_TTL = 60
-_remote_view_tickets: dict[str, tuple[float, str]] = {}
+_remote_view_tickets: dict[str, tuple[float, str, str | None]] = {}
 
 
 def _check_auth(scope: Scope) -> bool:
@@ -372,6 +373,7 @@ _RFB_MSG_SIZE: dict[int, int | None] = {
     4: 8,     # KeyEvent
     5: 6,     # PointerEvent
     6: None,  # ClientCutText — 8 + length
+    251: None,  # SetDesktopSize — 8 + 16 * number of screens
 }
 
 # Extension types that noVNC sends — known sizes so we can skip past them
@@ -398,6 +400,8 @@ _ALLOWED_ENCODINGS: set[int] = {
     # Safe pseudo-encodings
     -239,  # Cursor (0xFFFFFF11) — cursor shape
     -224,  # LastRect (0xFFFFFF20) — performance optimization
+    -223,  # DesktopSize
+    -308,  # ExtendedDesktopSize / SetDesktopSize negotiation
     # Tight quality/compress levels (these are just hints)
     *range(-32, -22),   # quality levels 0-9
     *range(-256, -246),  # compress levels 0-9
@@ -413,6 +417,8 @@ def _rfb_msg_length(data: bytes, offset: int) -> int | None:
     if fixed is not None:
         return fixed
     remaining = len(data) - offset
+    if msg_type == 251 and remaining >= 8:
+        return 8 + data[offset + 6] * 16
     if msg_type == 2 and remaining >= 4:  # SetEncodings
         num_enc = struct.unpack_from(">H", data, offset + 2)[0]
         return 4 + num_enc * 4
@@ -597,19 +603,28 @@ def _set_auth_cookie(request: Request, response: Response) -> None:
 
 
 @app.post("/api/profiles/{profile_id}/remote-view-ticket")
-async def remote_view_ticket(profile_id: str, response: Response):
+async def remote_view_ticket(profile_id: str, response: Response, body: dict | None = None):
     if not AUTH_TOKEN:
         raise HTTPException(status_code=409, detail="Authentication must be enabled")
     if not db.get_profile(profile_id):
         raise HTTPException(status_code=404, detail="Profile not found")
+    return_url = (body or {}).get("return_url")
+    if return_url is not None:
+        if not isinstance(return_url, str) or len(return_url) > 2048:
+            raise HTTPException(status_code=400, detail="Invalid BAM return URL")
+        parsed = urlparse(return_url)
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or not re.fullmatch(r"/accounts/[^/]+/remote-view", parsed.path)):
+            raise HTTPException(status_code=400, detail="Invalid BAM return URL")
     now = time.monotonic()
-    for key, (expires, _) in list(_remote_view_tickets.items()):
-        if expires <= now:
+    for key, entry in list(_remote_view_tickets.items()):
+        if entry[0] <= now:
             del _remote_view_tickets[key]
     if len(_remote_view_tickets) >= 1024:
         raise HTTPException(status_code=429, detail="Too many pending tickets")
     ticket = secrets.token_urlsafe(32)
-    _remote_view_tickets[ticket] = (now + _REMOTE_VIEW_TTL, profile_id)
+    _remote_view_tickets[ticket] = (now + _REMOTE_VIEW_TTL, profile_id, return_url)
     response.headers["Cache-Control"] = "no-store"
     return {"ticket": ticket, "expires_in": _REMOTE_VIEW_TTL}
 
@@ -625,7 +640,42 @@ async def redeem_remote_view(ticket: str, request: Request):
         return JSONResponse({"detail": "Profile not found"}, status_code=404, headers=headers)
     response = RedirectResponse("/?" + urlencode({"focus": entry[1]}), status_code=303, headers=headers)
     _set_auth_cookie(request, response)
+    if entry[2]:
+        # Persist only the authenticated ticket binding; query parameters never set it.
+        payload = base64.urlsafe_b64encode(entry[2].encode()).decode()
+        signature = hmac.digest(AUTH_TOKEN.encode(), (entry[1] + ":" + payload).encode(), "sha256").hex()
+        response.set_cookie("remote_view_return_" + entry[1], payload + "." + signature,
+                            httponly=True, secure=_is_https(request) or request.url.scheme == "https",
+                            samesite="strict", max_age=86400, path="/")
     return response
+
+
+@app.get("/api/profiles/{profile_id}/remote-view-context")
+async def remote_view_context(profile_id: str, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    value = request.cookies.get("remote_view_return_" + profile_id, "")
+    payload, _, signature = value.rpartition(".")
+    expected = hmac.digest((AUTH_TOKEN or "").encode(), (profile_id + ":" + payload).encode(), "sha256").hex()
+    if AUTH_TOKEN and payload and hmac.compare_digest(signature, expected):
+        try:
+            return {"restart_url": base64.urlsafe_b64decode(payload).decode()}
+        except (ValueError, UnicodeError):
+            pass
+    return {"restart_url": None}
+
+
+@app.post("/api/profiles/{profile_id}/viewer-size")
+async def viewer_size(profile_id: str, body: dict, request: Request):
+    if not _same_origin_request(request):
+        raise HTTPException(status_code=403, detail="Cross-origin request rejected")
+    width, height = body.get("width"), body.get("height")
+    if (type(width) is not int or type(height) is not int
+            or not 320 <= width <= 7680 or not 240 <= height <= 4320):
+        raise HTTPException(status_code=400, detail="Invalid viewer size")
+    if profile_id not in browser_mgr.running:
+        raise HTTPException(status_code=409, detail="Profile not running")
+    await browser_mgr.resize_viewer(profile_id, width, height)
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")

@@ -305,8 +305,20 @@ async def test_docker_launch_keeps_vnc_display(monkeypatch, tmp_path: Path):
     context.add_init_script.assert_awaited_once()
     options = launch.await_args.kwargs
     assert options["env"]["DISPLAY"] == ":100"
-    assert options["viewport"] == {"width": 1920, "height": 947}
+    assert options["viewport"] is None
     assert "--use-angle=swiftshader" in options["args"]
+
+
+@pytest.mark.asyncio
+async def test_resize_viewer_fits_existing_windows_without_opening_pages():
+    manager = BrowserManager(DOCKER_RUNTIME)
+    session = MagicMock(send=AsyncMock(return_value={"windowId": 7}), detach=AsyncMock())
+    context = MagicMock(pages=[MagicMock(), MagicMock()], new_cdp_session=AsyncMock(return_value=session))
+    manager.running["one"] = MagicMock(display=100, context=context)
+    await manager.resize_viewer("one", 1600, 1064)
+    bounds = [call.args[1]["bounds"] for call in session.send.await_args_list if call.args[0] == "Browser.setWindowBounds"]
+    assert bounds == [{"windowState": "normal"}, {"left": 0, "top": 0, "width": 1600, "height": 1064}]
+    context.new_page.assert_not_called()
 
 
 @pytest.mark.asyncio

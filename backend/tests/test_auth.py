@@ -104,8 +104,8 @@ def test_remote_view_ticket_expired_or_unknown(client_auth, sample_profile, monk
 
     issued = issue_view_ticket(client_auth, sample_profile["id"]).json()
     ticket = issued["ticket"]
-    expires, profile_id = main._remote_view_tickets[ticket]
-    main._remote_view_tickets[ticket] = (expires - 61, profile_id)
+    expires, profile_id, return_url = main._remote_view_tickets[ticket]
+    main._remote_view_tickets[ticket] = (expires - 61, profile_id, return_url)
     assert client_auth.get("/api/auth/remote-view?ticket=" + ticket).status_code == 401
     assert ticket not in main._remote_view_tickets
     assert client_auth.get("/api/auth/remote-view?ticket=unknown").status_code == 401
@@ -115,6 +115,27 @@ def test_remote_view_target_cannot_be_overridden(client_auth, sample_profile):
     ticket = issue_view_ticket(client_auth, sample_profile["id"]).json()["ticket"]
     result = client_auth.get("/api/auth/remote-view", params={"ticket": ticket, "next": "//evil.example.test"}, follow_redirects=False)
     assert result.headers["location"] == "/?focus=" + sample_profile["id"]
+
+
+def test_restart_url_is_bound_by_ticket_not_query_or_cookie_edit(client_auth, sample_profile):
+    profile_id = sample_profile["id"]
+    restart = "https://console.example.test/accounts/person%40example.test/remote-view"
+    issued = client_auth.post(f"/api/profiles/{profile_id}/remote-view-ticket",
+                             json={"return_url": restart}, headers={"Authorization": "Bearer test-secret"})
+    result = client_auth.get("/api/auth/remote-view", params={"ticket": issued.json()["ticket"], "return_url": "https://evil.example.test"}, follow_redirects=False)
+    assert result.status_code == 303
+    path = f"/api/profiles/{profile_id}/remote-view-context"
+    assert client_auth.get(path).json() == {"restart_url": restart}
+    assert client_auth.get(path + "?return_url=https://evil.example.test").json() == {"restart_url": restart}
+    client_auth.cookies.clear()
+    client_auth.cookies.set("remote_view_return_" + profile_id, "forged.signature")
+    assert client_auth.get(path, headers={"Authorization": "Bearer test-secret"}).json() == {"restart_url": None}
+
+
+@pytest.mark.parametrize("return_url", ["javascript:alert(1)", "//evil.example.test", "https://console.example.test/redirect", "https://user:password@console.example.test/accounts/a/remote-view"])
+def test_restart_url_rejects_non_bam_paths(client_auth, sample_profile, return_url):
+    result = client_auth.post(f"/api/profiles/{sample_profile['id']}/remote-view-ticket", json={"return_url": return_url}, headers={"Authorization": "Bearer test-secret"})
+    assert result.status_code == 400
 
 
 def test_auth_wrong_bearer_401(client_auth: TestClient):

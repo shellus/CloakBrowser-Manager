@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from cloakbrowser import launch_persistent_context_async
+from cloakbrowser.config import IGNORE_DEFAULT_ARGS
 from cloakbrowser.license import (
     CloakBrowserLicenseError,
     license_error_for_code,
@@ -25,6 +26,12 @@ from .vnc_manager import VNCManager
 from .remote_environment import start_proxy, stop_proxy, push_profile_async, restore_profile, mark_dirty, sync_status, sync_error, registry_enabled
 
 logger = logging.getLogger("cloakbrowser.manager.browser")
+
+# Playwright otherwise appends an automation-owned about:blank at every
+# persistent launch, which --restore-last-session saves and restores forever.
+# Let Chromium restore the user's session (or create its normal initial tab).
+if "about:blank" not in IGNORE_DEFAULT_ARGS:
+    IGNORE_DEFAULT_ARGS.append("about:blank")
 
 
 UPGRADE_URL = "https://cloakbrowser.dev/#pricing"
@@ -535,10 +542,7 @@ class BrowserManager:
                     "release_channel": self.release_channel,
                 }
                 if display is not None:
-                    launch_options["viewport"] = {
-                        "width": profile.get("screen_width", 1920),
-                        "height": profile.get("screen_height", 1080) - 133,
-                    }
+                    launch_options["viewport"] = None
                     launch_options["env"] = {**os.environ, "DISPLAY": f":{display}"}
 
                 last_cdp_error: Exception | None = None
@@ -746,6 +750,7 @@ class BrowserManager:
         Every later launch then carries Google via the profile's own files.
         """
         ctx = await self._headless_launch(user_data_dir)
+        page = None
         try:
             page = await ctx.new_page()
             await page.goto("chrome://settings/searchEngines")
@@ -783,6 +788,11 @@ class BrowserManager:
                     f"make-default did not take (clicked={clicked}, active={active})"
                 )
         finally:
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception as exc:
+                    logger.debug("Search setup tab cleanup failed: %s", exc)
             await self._close_context(ctx, "search-init")
         await asyncio.sleep(0.5)
 
@@ -796,6 +806,24 @@ class BrowserManager:
             license_key=self.license_key,
             release_channel=self.release_channel,
         )
+
+    async def resize_viewer(self, profile_id: str, width: int, height: int) -> None:
+        running = self.running[profile_id]
+        if running.display is None:
+            raise ValueError("Viewer resize requires a VNC display")
+        windows = set()
+        for page in list(running.context.pages):
+            session = await running.context.new_cdp_session(page)
+            try:
+                window = await session.send("Browser.getWindowForTarget")
+                window_id = window["windowId"]
+                if window_id in windows:
+                    continue
+                windows.add(window_id)
+                await session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"windowState": "normal"}})
+                await session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"left": 0, "top": 0, "width": width, "height": height}})
+            finally:
+                await session.detach()
 
     async def _capture_screenshot(self, running: RunningProfile) -> None:
         """Write a compressed JPEG of the profile's current page to disk.

@@ -180,6 +180,8 @@ async function request<T>(
 }
 
 export const api = {
+  getRemoteViewContext: (id: string) => request<{ restart_url: string | null }>(`/api/profiles/${encodeURIComponent(id)}/remote-view-context`),
+  resizeViewer: (id: string, width: number, height: number) => request<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(id)}/viewer-size`, { method: "POST", body: JSON.stringify({ width, height }), signal: AbortSignal.timeout(15_000) }),
   authStatus: () =>
     request<{ auth_required: boolean; authenticated: boolean }>("/api/auth/status"),
 

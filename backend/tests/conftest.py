@@ -44,6 +44,7 @@ _mock_cloakbrowser.launch_persistent_context_async = AsyncMock()  # type: ignore
 
 _mock_config = types.ModuleType("cloakbrowser.config")
 _mock_config.CHROMIUM_VERSION = "0.0.0-test"  # type: ignore[attr-defined]
+_mock_config.IGNORE_DEFAULT_ARGS = ["--enable-automation"]
 _mock_config.get_chromium_version = lambda: "0.0.0-test"  # type: ignore[attr-defined]
 
 # BrowserManager.resolve_binary_status() (run in the lifespan) imports these.

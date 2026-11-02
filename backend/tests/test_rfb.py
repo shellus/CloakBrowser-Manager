@@ -17,6 +17,14 @@ from backend.main import (
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def test_desktop_resize_negotiation_and_batched_pointer():
+    resize = struct.pack(">BBHHBBIHHHHI", 251, 0, 1600, 1064, 1, 0, 0, 0, 0, 1600, 1064, 0)
+    assert _rfb_msg_length(resize, 0) == 24
+    assert _filter_rfb_client_messages(resize) == resize
+    assert _filter_rfb_client_messages(resize + _make_key_event()) == resize + _make_key_event()
+    encodings = _make_set_encodings([-223, -308, 0])
+    assert _filter_rfb_client_messages(encodings) == encodings
+
 
 def _make_key_event(down: int = 1, key: int = 0x61) -> bytes:
     """Build an 8-byte RFB KeyEvent (type 4)."""
