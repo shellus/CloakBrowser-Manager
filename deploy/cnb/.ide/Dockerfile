@@ -30,7 +30,7 @@ RUN set -eux; cd /tmp; \
 
 # CloakBrowser-Manager with remote environment support.
 # Bump CACHE_BUST to rebuild with the latest MANAGER_REF commit.
-ARG CACHE_BUST=1
+ARG CACHE_BUST=proxy-restart-9110b26
 ARG MANAGER_REF=feat/remote-environment
 RUN echo "building ${CACHE_BUST}"
 RUN set -eux; git clone --depth 1 -b ${MANAGER_REF} https://github.com/shellus/CloakBrowser-Manager.git /app; \
