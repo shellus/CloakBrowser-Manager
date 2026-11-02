@@ -306,6 +306,7 @@ async def test_docker_launch_keeps_vnc_display(monkeypatch, tmp_path: Path):
     options = launch.await_args.kwargs
     assert options["env"]["DISPLAY"] == ":100"
     assert options["viewport"] is None
+    assert "--test-type" in options["args"]
     assert "--use-angle=swiftshader" in options["args"]
 
 

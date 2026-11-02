@@ -514,6 +514,8 @@ class BrowserManager:
                     )
 
                 extra_args = self._build_fingerprint_args(profile)
+                if display is not None:
+                    extra_args.append("--test-type")
                 extra_args += user_launch_args
                 extra_args.append("--remote-debugging-address=127.0.0.1")
                 # Reopen the tabs the user had open when the profile was last stopped.
