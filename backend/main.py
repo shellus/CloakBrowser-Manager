@@ -56,6 +56,7 @@ from .models import (
     ProfileStatusResponse,
     ProfileUpdate,
     ProxyChainUpdate,
+    ProfileProxyProbe,
     ProxyTestRequest,
     ProxyTestResponse,
     ReorderRequest,
@@ -779,6 +780,18 @@ async def update_proxy_chain(profile_id: str, req: ProxyChainUpdate):
     except Exception as exc:
         logger.error("Proxy replacement failed for %s: %s", profile_id, exc)
         raise HTTPException(status_code=503, detail="Proxy configuration was not applied") from exc
+
+
+@app.post("/api/profiles/{profile_id}/proxy-probe")
+async def probe_profile_proxy(profile_id: str, req: ProfileProxyProbe):
+    try:
+        return await browser_mgr.probe_proxy(profile_id, req.proxy_chain, req.url,
+                                             req.connect_timeout_seconds, req.timeout_seconds)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found") from exc
+    except remote.ProxyProbeError as exc:
+        raise HTTPException(status_code=409 if exc.code == "PROXY_PROBE_CHAIN_CHANGED" else 503,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 @app.delete("/api/profiles/{profile_id}")

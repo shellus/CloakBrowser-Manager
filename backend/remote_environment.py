@@ -202,7 +202,8 @@ def proxy_config(chain: list[dict], port: int) -> dict:
         if i:
             proxy["dialer-proxy"] = f"hop-{i - 1}"
     return {"mixed-port": port, "bind-address": "127.0.0.1", "allow-lan": False,
-            "mode": "rule", "proxies": proxies, "rules": [f"MATCH,hop-{len(proxies) - 1}"]}
+            "mode": "rule", "proxies": proxies,
+            "rules": [f"MATCH,hop-{len(proxies) - 1}" if proxies else "MATCH,DIRECT"]}
 
 
 def chain_version(chain: list[dict]) -> str:
@@ -219,9 +220,9 @@ def proxy_port(profile_id: str) -> int | None:
     return _proxy_ports.get(profile_id)
 
 
-def start_proxy(profile: dict[str, Any], *, port: int | None = None, prepared: Path | None = None) -> str | None:
+def start_proxy(profile: dict[str, Any], *, port: int | None = None, prepared: Path | None = None, allow_direct: bool = False) -> str | None:
     chain = profile.get("proxy_chain") or []
-    if not (ENABLED and chain):
+    if not (ENABLED and (chain or allow_direct)):
         return None
     if port is None:
         with socket.socket() as sock:
@@ -295,3 +296,54 @@ def stop_proxy(profile_id: str, *, preserve_port: bool = False) -> None:
 
 async def push_profile_async(profile: dict[str, Any]) -> None:
     await asyncio.to_thread(push_profile, profile)
+
+
+class ProxyProbeError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def probe_proxy(profile: dict, chain: list[dict], url: str, connect_timeout: float,
+                timeout: float, *, running: bool) -> dict:
+    """Probe only through this Profile's Mihomo; never persist a diagnostic chain."""
+    if not ENABLED:
+        raise ProxyProbeError("PROXY_PROBE_UNAVAILABLE", "Remote proxy runtime is disabled")
+    profile_id = profile["id"]
+    version = chain_version(chain)
+    temporary = not running
+    if running and (proxy_status(profile_id) != {"ready": True, "applied_version": version}
+                    or proxy_port(profile_id) is None):
+        raise ProxyProbeError("PROXY_PROBE_CHAIN_CHANGED", "Running Profile proxy does not match the requested chain")
+    try:
+        if temporary:
+            start_proxy({**profile, "proxy_chain": chain}, allow_direct=True)
+        proc = _processes.get(profile_id)
+        port = proxy_port(profile_id)
+        if proc is None or proc.poll() is not None or port is None:
+            raise ProxyProbeError("PROXY_PROBE_UNAVAILABLE", "Profile Mihomo is not ready")
+        source = {"profileId": profile_id, "pid": proc.pid, "port": port,
+                  "temporary": temporary, "chainVersion": version}
+        log.info("Profile proxy probe start profile=%s mihomo_pid=%s port=%s temporary=%s chain_version=%s",
+                 profile_id, proc.pid, port, temporary, version)
+        result = subprocess.run(
+            ["curl.exe" if os.name == "nt" else "curl", "--silent", "--show-error",
+             "--noproxy", "", "--proxy", f"http://127.0.0.1:{port}",
+             "--proto", "=http,https", "--connect-timeout", str(connect_timeout),
+             "--max-time", str(timeout), "--write-out", "\n%{http_code}", "--url", url],
+            check=True, capture_output=True, encoding="utf-8", timeout=timeout + 5,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+        body, separator, status = result.stdout.rpartition("\n")
+        if not separator or not status.isdigit() or not 100 <= int(status) <= 599:
+            raise RuntimeError("Probe response has no HTTP status")
+        log.info("Profile proxy probe complete profile=%s mihomo_pid=%s port=%s temporary=%s http_status=%s",
+                 profile_id, proc.pid, port, temporary, status)
+        return {"httpStatus": int(status), "body": body, "source": source}
+    except ProxyProbeError:
+        raise
+    except Exception as exc:
+        log.warning("Profile proxy probe failed profile=%s temporary=%s: %s", profile_id, temporary, exc)
+        raise ProxyProbeError("PROXY_VERIFY_REQUEST_FAILED", "Profile Mihomo probe request failed") from exc
+    finally:
+        if temporary:
+            stop_proxy(profile_id)

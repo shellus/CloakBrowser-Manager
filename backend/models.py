@@ -43,6 +43,23 @@ class ProxyChainUpdate(BaseModel):
     proxy_chain: list[dict] = Field(min_length=1)
 
 
+class ProfileProxyProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proxy_chain: list[dict]
+    url: str
+    connect_timeout_seconds: float = Field(gt=0, le=60)
+    timeout_seconds: float = Field(gt=0, le=90)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Probe URL must be HTTP(S) without credentials")
+        return value
+
+
 class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -302,6 +302,21 @@ hashes and replacement support. Identical applied chains do not restart Mihomo;
 after an uncertain HTTP response, read this status before retrying. These endpoints
 use the existing authentication and require remote mode.
 
+`POST /api/profiles/{id}/proxy-probe` diagnoses a supplied `proxy_chain` through
+that Profile's Mihomo on the browser host. Supply an HTTP(S) `url`,
+`connect_timeout_seconds` (up to 60) and `timeout_seconds` (up to 90). Running
+profiles reuse their existing listener only when the applied chain hash matches;
+otherwise the request fails with `PROXY_PROBE_CHAIN_CHANGED`. Stopped profiles
+use a temporary Mihomo, including `MATCH,DIRECT` for an empty chain, without
+launching a browser or saving the supplied chain. Cleanup completes before
+lifecycle operations can continue, even when the caller disconnects.
+The response contains `httpStatus`, the raw response `body`, and `source`
+(`profileId`, Mihomo `pid`, loopback `port`, `temporary`, `chainVersion`). Logs
+record the process, listener and HTTP status. The endpoint requires remote mode
+and existing authentication; there is no host-network fallback. It requires
+`curl` (`curl.exe` on Windows) on the browser host. Request failures return
+`PROXY_VERIFY_REQUEST_FAILED`; unavailable runtimes return `PROXY_PROBE_UNAVAILABLE`.
+
 Registry snapshots include profile metadata, tags, and browser session data.
 Startup rebuilds the disposable profile index from registry tags; legacy tags
 without Manager metadata are skipped. Cache directories are excluded. Browser

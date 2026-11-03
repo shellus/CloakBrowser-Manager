@@ -947,6 +947,26 @@ class BrowserManager:
         self._last_errors[profile_id] = license_error_detail(lic)
         logger.warning("Profile %s closed on a license denial: %s", profile_id, lic)
 
+    async def probe_proxy(self, profile_id: str, chain: list[dict], url: str,
+                          connect_timeout: float, timeout: float) -> dict:
+        from . import database as db
+        from . import remote_environment as remote
+        async with self._lock:
+            if profile_id in self._launching or profile_id in self._stopping or profile_id in self._initializing:
+                raise remote.ProxyProbeError("PROXY_PROBE_UNAVAILABLE", "Profile is changing lifecycle state")
+            profile = db.get_profile(profile_id)
+            if not profile:
+                raise LookupError("Profile not found")
+            probe = asyncio.create_task(asyncio.to_thread(
+                remote.probe_proxy, profile, chain, url, connect_timeout, timeout,
+                running=profile_id in self.running))
+            try:
+                return await asyncio.shield(probe)
+            except asyncio.CancelledError:
+                # Keep lifecycle ownership until the worker has cleaned up its Mihomo.
+                await probe
+                raise
+
     async def apply_proxy_chain(self, profile_id: str, chain: list[dict]) -> dict:
         from . import database as db
         from . import remote_environment as remote
