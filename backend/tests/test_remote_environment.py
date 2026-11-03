@@ -154,6 +154,26 @@ def test_cold_start_restores_metadata_tags_and_browser_data(tmp_db, registry, mo
     remote.rebuild_profiles()  # idempotent when local index exists
 
 
+@pytest.mark.parametrize("message", [
+    "crane ls failed: Error: reading tags for registry.invalid/test/profile: NAME_UNKNOWN: repository name not known to registry",
+    "crane ls failed: Error: reading tags for docker.cnb.cool/org/repo/profile: GET https://docker.cnb.cool/v2/org/repo/profile/tags/list?n=1000: NOT_FOUND: resource not found: package org/repo/profile not found",
+])
+def test_first_start_with_empty_registry_rebuilds_nothing(tmp_db, registry, monkeypatch, message):
+    def missing(*args):
+        raise RuntimeError(message)
+    monkeypatch.setattr(remote, "_run", missing)
+    remote.rebuild_profiles()
+    assert db.list_profiles() == []
+
+
+def test_rebuild_still_fails_on_other_registry_errors(tmp_db, registry, monkeypatch):
+    def unauthorized(*args):
+        raise RuntimeError("crane ls failed: Error: UNAUTHORIZED: authentication required")
+    monkeypatch.setattr(remote, "_run", unauthorized)
+    with pytest.raises(RuntimeError, match="UNAUTHORIZED"):
+        remote.rebuild_profiles()
+
+
 def test_unclean_profile_is_not_published(tmp_db, registry, monkeypatch):
     profile = db.create_profile("Crash")
     default = Path(profile["user_data_dir"]) / "Default"

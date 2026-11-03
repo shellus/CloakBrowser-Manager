@@ -98,7 +98,9 @@ def rebuild_profiles() -> None:
     try:
         tags = _run(CRANE_PATH, "ls", f"{REGISTRY.rstrip('/')}/{REGISTRY_PREFIX}").splitlines()
     except RuntimeError as exc:
-        if "NAME_UNKNOWN" in str(exc):
+        # An empty registry has no profile repository yet. Docker Hub style
+        # registries answer NAME_UNKNOWN; docker.cnb.cool answers NOT_FOUND.
+        if "NAME_UNKNOWN" in str(exc) or "NOT_FOUND" in str(exc):
             return
         raise
     for tag in tags:
